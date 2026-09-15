@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EstacionaYa - Mapa de la Cuadra</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex flex-col items-center justify-center p-4">
+    <div class="max-w-4xl w-full bg-gray-800 rounded-xl shadow-2xl p-6 border border-gray-700">
+        
+        <!-- Cabecera -->
+        <header class="flex flex-col sm:flex-row justify-between items-center mb-6 pb-4 border-b border-gray-700 gap-4">
+            <h1 class="text-2xl font-bold text-emerald-400 flex items-center gap-2">
+                🚗 EstacionaYa <span class="text-sm font-normal text-gray-400">- Mapa de la Cuadra</span>
+            </h1>
+            <div class="flex gap-4 text-xs sm:text-sm">
+                <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-emerald-500 shadow-lg shadow-emerald-500/50"></span> Disponible</span>
+                <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-amber-500 shadow-lg shadow-amber-500/50"></span> Reservado</span>
+                <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-rose-500 shadow-lg shadow-rose-500/50"></span> Ocupado (IA)</span>
+            </div>
+        </header>
+
+        <!-- Mapa de la Cuadra -->
+        <div class="relative bg-gray-950 rounded-xl p-6 border-2 border-dashed border-gray-700 flex flex-col gap-6 shadow-inner">
+            
+            <!-- Acera Norte -->
+            <div>
+                <p class="text-xs text-gray-400 mb-2 font-semibold tracking-wider uppercase">Acera Norte (Puestos 01 - 04)</p>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    <!-- Puesto 1 -->
+                    <div id="slot-1" class="p-4 rounded-xl border border-emerald-500 bg-emerald-950/30 flex flex-col items-center justify-between gap-3 transition-all duration-300">
+                        <span class="font-bold text-sm text-gray-200">Puesto 01</span>
+                        <span class="status-badge text-xs px-2.5 py-1 rounded-full bg-emerald-500 text-black font-bold shadow">Disponible</span>
+                        <button onclick="cambiarEstado(1)" class="w-full py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-semibold transition shadow">Reservar</button>
+                    </div>
+                    <!-- Puesto 2 -->
+                    <div id="slot-2" class="p-4 rounded-xl border border-rose-500 bg-rose-950/30 flex flex-col items-center justify-between gap-3 transition-all duration-300">
+                        <span class="font-bold text-sm text-gray-200">Puesto 02</span>
+                        <span class="status-badge text-xs px-2.5 py-1 rounded-full bg-rose-500 text-white font-bold shadow">Ocupado</span>
+                        <button class="w-full py-1.5 text-xs bg-gray-700 text-gray-400 rounded-lg font-semibold cursor-not-allowed" disabled>Detectado por IA</button>
+                    </div>
+                    <!-- Puesto 3 -->
+                    <div id="slot-3" class="p-4 rounded-xl border border-amber-500 bg-amber-950/30 flex flex-col items-center justify-between gap-3 transition-all duration-300">
+                        <span class="font-bold text-sm text-gray-200">Puesto 03</span>
+                        <span class="status-badge text-xs px-2.5 py-1 rounded-full bg-amber-500 text-black font-bold shadow">Reservado</span>
+                        <button onclick="cambiarEstado(3)" class="w-full py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-semibold transition shadow">Liberar</button>
+                    </div>
+                    <!-- Puesto 4 -->
+                    <div id="slot-4" class="p-4 rounded-xl border border-emerald-500 bg-emerald-950/30 flex flex-col items-center justify-between gap-3 transition-all duration-300">
+                        <span class="font-bold text-sm text-gray-200">Puesto 04</span>
+                        <span class="status-badge text-xs px-2.5 py-1 rounded-full bg-emerald-500 text-black font-bold shadow">Disponible</span>
+                        <button onclick="cambiarEstado(4)" class="w-full py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-semibold transition shadow">Reservar</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Calle Principal (Simulación de vía) -->
+            <div class="h-20 bg-gray-900 border-y-2 border-dashed border-gray-700 flex items-center justify-center text-gray-500 text-xs tracking-widest uppercase rounded-lg shadow-inner">
+                🛣️ Vía de Tránsito Vehicular (Calle Principal) 🚗
+            </div>
+
+            <!-- Acera Sur -->
+            <div>
+                <p class="text-xs text-gray-400 mb-2 font-semibold tracking-wider uppercase">Acera Sur (Puestos 05 - 08)</p>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    <!-- Puesto 5 -->
+                    <div id="slot-5" class="p-4 rounded-xl border border-emerald-500 bg-emerald-950/30 flex flex-col items-center justify-between gap-3 transition-all duration-300">
+                        <span class="font-bold text-sm text-gray-200">Puesto 05</span>
+                        <span class="status-badge text-xs px-2.5 py-1 rounded-full bg-emerald-500 text-black font-bold shadow">Disponible</span>
+                        <button onclick="cambiarEstado(5)" class="w-full py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-semibold transition shadow">Reservar</button>
+                    </div>
+                    <!-- Puesto 6 -->
+                    <div id="slot-6" class="p-4 rounded-xl border border-rose-500 bg-rose-950/30 flex flex-col items-center justify-between gap-3 transition-all duration-300">
+                        <span class="font-bold text-sm text-gray-200">Puesto 06</span>
+                        <span class="status-badge text-xs px-2.5 py-1 rounded-full bg-rose-500 text-white font-bold shadow">Ocupado</span>
+                        <button class="w-full py-1.5 text-xs bg-gray-700 text-gray-400 rounded-lg font-semibold cursor-not-allowed" disabled>Detectado por IA</button>
+                    </div>
+                    <!-- Puesto 7 -->
+                    <div id="slot-7" class="p-4 rounded-xl border border-emerald-500 bg-emerald-950/30 flex flex-col items-center justify-between gap-3 transition-all duration-300">
+                        <span class="font-bold text-sm text-gray-200">Puesto 07</span>
+                        <span class="status-badge text-xs px-2.5 py-1 rounded-full bg-emerald-500 text-black font-bold shadow">Disponible</span>
+                        <button onclick="cambiarEstado(7)" class="w-full py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-semibold transition shadow">Reservar</button>
+                    </div>
+                    <!-- Puesto 8 -->
+                    <div id="slot-8" class="p-4 rounded-xl border border-amber-500 bg-amber-950/30 flex flex-col items-center justify-between gap-3 transition-all duration-300">
+                        <span class="font-bold text-sm text-gray-200">Puesto 08</span>
+                        <span class="status-badge text-xs px-2.5 py-1 rounded-full bg-amber-500 text-black font-bold shadow">Reservado</span>
+                        <button onclick="cambiarEstado(8)" class="w-full py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-semibold transition shadow">Liberar</button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Pie de página con datos de servicios locales -->
+        <footer class="mt-6 flex flex-col sm:flex-row justify-between items-center text-xs text-gray-400 gap-2">
+            <p>API Local: <span class="text-emerald-400 font-mono">http://localhost:8000</span></p>
+            <p>Supabase Studio: <span class="text-emerald-400 font-mono">http://localhost:54323</span></p>
+        </footer>
+    </div>
+
+    <script>
+        // Función interactiva para simular reservas locales al hacer clic en los botones
+        function cambiarEstado(id) {
+            const slot = document.getElementById(`slot-${id}`);
+            const badge = slot.querySelector('.status-badge');
+            const btn = slot.querySelector('button');
+
+            if (badge.textContent === 'Disponible') {
+                // Cambiar a Reservado
+                slot.className = "p-4 rounded-xl border border-amber-500 bg-amber-950/30 flex flex-col items-center justify-between gap-3 transition-all duration-300";
+                badge.className = "status-badge text-xs px-2.5 py-1 rounded-full bg-amber-500 text-black font-bold shadow";
+                badge.textContent = "Reservado";
+                btn.className = "w-full py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-semibold transition shadow";
+                btn.textContent = "Liberar";
+            } else if (badge.textContent === 'Reservado') {
+                // Cambiar a Disponible
+                slot.className = "p-4 rounded-xl border border-emerald-500 bg-emerald-950/30 flex flex-col items-center justify-between gap-3 transition-all duration-300";
+                badge.className = "status-badge text-xs px-2.5 py-1 rounded-full bg-emerald-500 text-black font-bold shadow";
+                badge.textContent = "Disponible";
+                btn.className = "w-full py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-semibold transition shadow";
+                btn.textContent = "Reservar";
+            }
+            // Nota: Los puestos "Ocupados" están bloqueados porque se gestionan automáticamente a través de la detección por visión artificial.
+        }
+    </script>
+</body>
+</html>

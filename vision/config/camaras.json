@@ -1,0 +1,18 @@
+{
+  "camara_id": "camara-01",
+  "fuente_video": 0,
+  "espacios": [
+    {
+      "id_supabase": 1,
+      "nombre": "Espacio A1",
+      "poligono_roi": [[80, 220], [260, 220], [260, 400], [80, 400]]
+    },
+    {
+      "id_supabase": 2,
+      "nombre": "Espacio A2",
+      "poligono_roi": [[300, 220], [480, 220], [480, 400], [300, 400]]
+    }
+  ],
+  "umbral_solapamiento": 0.35,
+  "intervalo_segundos_entre_lecturas": 1.0
+}
