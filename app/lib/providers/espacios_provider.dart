@@ -1,13 +1,21 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/espacio.dart';
 import '../services/api_service.dart';
 import '../services/supabase_service.dart';
 
 class EspaciosProvider extends ChangeNotifier {
-  final _supabaseService = SupabaseService();
-  final _apiService = ApiService();
+  EspaciosProvider({Stream<List<Map<String, dynamic>>>? espaciosStream})
+      : _espaciosStream = espaciosStream;
+
+  final Stream<List<Map<String, dynamic>>>? _espaciosStream;
+  final ApiService _apiService = ApiService();
+  StreamSubscription<List<Espacio>>? _suscripcion;
+  bool _disposed = false;
 
   List<Espacio> espacios = [];
   int puntosKarma = 0;
@@ -15,65 +23,94 @@ class EspaciosProvider extends ChangeNotifier {
   String? error;
 
   Future<void> iniciar() async {
-    await _cargarEspacios();
-    await _cargarPerfil();
-    _supabaseService.suscribirseAEspacios(_actualizarEspacio);
+    if (_disposed || _suscripcion != null) return;
+    cargando = true;
+    error = null;
+    notifyListeners();
+
+    try {
+      final stream = _espaciosStream ??
+          Supabase.instance.client
+              .from('espacios')
+              .stream(primaryKey: ['id']).order('camara_id');
+      _suscripcion =
+          stream.map((filas) => filas.map(Espacio.fromMap).toList()).listen(
+        (actualizados) {
+          if (_disposed) return;
+          // Lista completa tras INSERT, UPDATE o DELETE.
+          espacios = actualizados;
+          cargando = false;
+          error = null;
+          notifyListeners();
+        },
+        onError: (Object e, StackTrace stackTrace) => _mostrarError(e),
+        onDone: () => _suscripcion = null,
+      );
+    } catch (e) {
+      _mostrarError(e);
+    }
+    unawaited(_cargarPerfil());
   }
 
-  Future<void> _cargarEspacios() async {
-    cargando = true;
-    notifyListeners();
-    try {
-      espacios = await _supabaseService.obtenerEspacios();
-      error = null;
-    } catch (_) {
-      error = 'No se pudieron cargar los espacios. Revisa tu conexión.';
-    }
+  void _mostrarError(Object e) {
+    if (_disposed) return;
     cargando = false;
+    error = 'No se pudieron sincronizar los espacios. '
+        'Revisa la conexión y la configuración de Supabase.';
+    debugPrint('Error al sincronizar espacios: $e');
     notifyListeners();
   }
 
   Future<void> _cargarPerfil() async {
-    final perfil = await _supabaseService.obtenerMiPerfil();
-    if (perfil != null) {
+    // Un fallo del perfil no debe bloquear la sincronización del mapa.
+    try {
+      final perfil = await SupabaseService().obtenerMiPerfil();
+      if (_disposed || perfil == null) return;
       puntosKarma = perfil['puntos_karma'] as int? ?? 0;
       notifyListeners();
+    } catch (e) {
+      debugPrint('No se pudo cargar el perfil: $e');
     }
   }
 
-  void _actualizarEspacio(Espacio actualizado) {
-    final indice = espacios.indexWhere((e) => e.id == actualizado.id);
-    if (indice != -1) {
-      espacios[indice] = actualizado;
-      notifyListeners();
-    }
-  }
-
-  /// RF6: exige la ubicación real del dispositivo antes de reportar.
   Future<void> reportar(Espacio espacio, String tipo) async {
-    final permiso = await Geolocator.checkPermission();
-    if (permiso == LocationPermission.denied) {
-      final solicitado = await Geolocator.requestPermission();
-      if (solicitado == LocationPermission.denied ||
-          solicitado == LocationPermission.deniedForever) {
-        throw Exception('Necesitas dar permiso de ubicación para reportar.');
-      }
-    }
-
+    await _verificarPermisoUbicacion();
     final posicion = await Geolocator.getCurrentPosition(
       desiredAccuracy: LocationAccuracy.high,
     );
-
     await _apiService.reportar(
       espacioId: espacio.id,
       tipo: tipo,
       latitud: posicion.latitude,
       longitud: posicion.longitude,
     );
-
+    if (_disposed) return;
     if (tipo == 'VOY_A_SALIR') {
       puntosKarma += 10;
       notifyListeners();
     }
+  }
+
+  Future<void> _verificarPermisoUbicacion() async {
+    var permiso = await Geolocator.checkPermission();
+    if (permiso == LocationPermission.denied) {
+      permiso = await Geolocator.requestPermission();
+    }
+    if (permiso == LocationPermission.denied) {
+      throw Exception('Necesitas dar permiso de ubicación para reportar.');
+    }
+    if (permiso == LocationPermission.deniedForever) {
+      throw Exception('El permiso de ubicación está bloqueado. '
+          'Actívalo desde la configuración del dispositivo.');
+    }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    final suscripcion = _suscripcion;
+    _suscripcion = null;
+    if (suscripcion != null) unawaited(suscripcion.cancel());
+    super.dispose();
   }
 }

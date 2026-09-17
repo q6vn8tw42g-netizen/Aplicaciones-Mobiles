@@ -20,7 +20,7 @@ class ApiService {
 
   /// RF3/RF4/RF6: reporte de conductor con validación de cercanía en el backend.
   Future<void> reportar({
-    required int espacioId,
+    required String espacioId,
     required String tipo, // 'ME_ESTACIONE' | 'VOY_A_SALIR'
     required double latitud,
     required double longitud,
@@ -43,7 +43,7 @@ class ApiService {
 
   /// RF5: solo disponible para usuarios con rol Validador/Admin.
   Future<void> forzarEstado({
-    required int espacioId,
+    required String espacioId,
     required String estado, // 'LIBRE' | 'OCUPADO'
     int minutosBloqueo = 30,
   }) async {
@@ -64,7 +64,8 @@ class ApiService {
   String _mensajeDeError(String cuerpo) {
     try {
       final decodificado = jsonDecode(cuerpo);
-      return decodificado['detail']?.toString() ?? 'Ocurrió un error inesperado.';
+      return decodificado['detail']?.toString() ??
+          'Ocurrió un error inesperado.';
     } catch (_) {
       return 'Ocurrió un error inesperado.';
     }
