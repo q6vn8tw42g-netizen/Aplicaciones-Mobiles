@@ -1,8 +1,8 @@
 class Espacio {
-  final int id;
+  final String id;
   final String nombre;
   final String camaraId;
-  final String estado; // 'LIBRE' | 'OCUPADO'
+  final String estado; // LIBRE | OCUPADO | RESERVADO | SIN_SERVICIO
   final double? latitud;
   final double? longitud;
   final DateTime actualizadoEn;
@@ -19,13 +19,13 @@ class Espacio {
 
   factory Espacio.fromMap(Map<String, dynamic> map) {
     return Espacio(
-      id: map['id'] as int,
-      nombre: map['nombre'] as String,
+      id: map['id'] as String,
+      nombre: map['codigo'] as String,
       camaraId: map['camara_id'] as String,
       estado: map['estado'] as String,
-      actualizadoEn: DateTime.parse(map['actualizado_en'] as String),
-      latitud: (map['latitud'] as num?)?.toDouble(),
-      longitud: (map['longitud'] as num?)?.toDouble(),
+      actualizadoEn: DateTime.parse(map['updated_at'] as String),
+      latitud: (map['lat'] as num?)?.toDouble(),
+      longitud: (map['lng'] as num?)?.toDouble(),
     );
   }
 

@@ -1,18 +1,29 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'config.dart';
-import 'screens/auth_gate.dart';
+import 'providers/espacios_provider.dart';
+import 'screens/home_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Supabase.initialize(
-    url: AppConfig.supabaseUrl,
-    anonKey: AppConfig.supabasePublishableKey,
-  );
+  url: 'https://pkvmkejunsvjhabysmpo.supabase.co',
+  anonKey: 'sb_publishable_lHbfYIGef_HcKcAw9rF4gw_LuhSkfAV' 
+);
 
-  runApp(const EstacionaYaApp());
+  runApp(
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(
+          create: (_) => EspaciosProvider()..iniciar(),
+        ),
+      ],
+      child: const EstacionaYaApp(),
+    ),
+  );
 }
 
 class EstacionaYaApp extends StatelessWidget {
@@ -27,7 +38,7 @@ class EstacionaYaApp extends StatelessWidget {
         colorSchemeSeed: const Color(0xFF1D9E75),
         useMaterial3: true,
       ),
-      home: const AuthGate(),
+      home: const HomeScreen(),
     );
   }
 }
