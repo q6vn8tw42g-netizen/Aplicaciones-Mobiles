@@ -1,30 +1,47 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:estacionaya/main.dart';
+import 'package:estacionaya/models/espacio.dart';
+import 'package:estacionaya/widgets/espacio_card.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('muestra el estado del espacio y oculta controles de validador',
+      (WidgetTester tester) async {
+    final espacio = Espacio(
+      id: 'a6241890-e1ac-4b86-8a2f-bdb01f9fcb50',
+      nombre: 'Parque Central de Tulcán',
+      camaraId: 'CAM-001',
+      estado: 'LIBRE',
+      latitud: 0.8119,
+      longitud: -77.7173,
+      actualizadoEn: DateTime.utc(2026, 10, 24),
+    );
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: EspacioCard(espacio: espacio, onReportar: (_) {})),
+    ));
+    expect(find.text('Parque Central de Tulcán'), findsOneWidget);
+    expect(find.text('Libre'), findsOneWidget);
+    expect(find.text('Navegar'), findsOneWidget);
+    expect(find.text('Me estacioné'), findsOneWidget);
+    expect(find.text('Forzar estado'), findsNothing);
+  });
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+  testWidgets('muestra CAM-001 en gris cuando no recibe heartbeat',
+      (WidgetTester tester) async {
+    final espacio = Espacio(
+      id: 'a6241890-e1ac-4b86-8a2f-bdb01f9fcb50',
+      nombre: 'Parque Central de Tulcán',
+      camaraId: 'CAM-001',
+      estado: 'OCUPADO',
+      latitud: 0.8119,
+      longitud: -77.7173,
+      actualizadoEn: DateTime.utc(2026, 10, 24),
+      visionEnLinea: false,
+    );
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: EspacioCard(espacio: espacio, onReportar: (_) {})),
+    ));
+    expect(find.text('Sin servicio'), findsOneWidget);
+    expect(find.text('Cámara sin conexión; estado no actualizado.'),
+        findsOneWidget);
   });
 }

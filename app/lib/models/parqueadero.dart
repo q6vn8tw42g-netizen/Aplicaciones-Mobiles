@@ -4,9 +4,9 @@ class Parqueadero {
   final String direccion;
   final double latitud;
   final double longitud;
-  
+
   // 2. Encapsulamiento: variable privada para proteger el estado del sensor/cámara
-  bool _estaOcupado; 
+  bool _estaOcupado;
 
   // 3. Constructor principal
   Parqueadero({

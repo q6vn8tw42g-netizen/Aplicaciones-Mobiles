@@ -1,115 +1,81 @@
-# EstacionaYa — Infraestructura (Supabase + FastAPI + Visión YOLOv8)
+# EstacionaYa
 
-## Arquitectura
+MVP de disponibilidad de estacionamientos en el campus UPEC de Tulcán. El monorepo contiene la app Flutter (`app/`), la API FastAPI (`api/`), el esquema Supabase (`supabase/`) y el módulo de visión por ROI (`vision_module/`), que usa YOLOv8 nano para detectar motos, autos y camionetas y conserva el umbral por píxeles como respaldo. El detector anterior (`vision/`) queda fuera del flujo del MVP.
 
-```
-[ Cámara IP / Webcam ]
-        │
-        ▼
-[ vision/detectar.py ]  ──(actualiza solo el estado, JSON liviano)──>  [ Supabase (Postgres) ]
-                                                                              │
-                                                                    (Realtime · suscripción)
-                                                                              ▼
-                                                                     [ App Flutter / Panel web ]
+## Arquitectura del MVP
 
-[ api/ (FastAPI) ] ──> lógica de negocio que no es solo CRUD:
-                        forzar-estado (RF5, rol Validador/Admin),
-                        reportar (RF3/RF4/RF6, fallback de conductor)
+```text
+Webcam 0 → vision_module (ROI + YOLO asíncrono + 20 detecciones estables)
+         → FastAPI recibe el JPEG anotado y lo distribuye por MJPEG
+         → PATCH solo al cambiar estado; heartbeat separado cada segundo
+         → Supabase (Postgres + Realtime)
+         → Flutter (mapa y lista en vivo; gris si el heartbeat vence)
+
+Flutter autenticado → FastAPI → reportes, cercanía GPS,
+                              forzado y bloqueo temporal por validador
 ```
 
-Supabase actúa como base de datos + autenticación + tiempo real. FastAPI
-existe para las reglas de negocio con permisos por rol que no se pueden
-expresar solo con RLS. El servicio de visión es un proceso aparte que
-corre donde esté la cámara.
+Las cuentas autenticadas pueden reservar un espacio libre por 10 minutos y cancelar su propia reserva. FastAPI libera las reservas vencidas y Supabase Realtime propaga el cambio a la app. El filtro de vehículo consulta el campo `tipo_vehiculo` del espacio; `MIXTO` se muestra en todos los filtros.
 
-## 1. Requisitos previos
+Los IDs de `espacios` y sus referencias usan UUID. La cámara actualiza un espacio después de confirmar 20 frames y la base rechaza cambios de `fuente=CAMARA` mientras un bloqueo de validador esté vigente. Un trigger guarda los cambios de estado en el historial dentro de la misma transacción.
 
-- Docker y Docker Compose
-- [Supabase CLI](https://supabase.com/docs/guides/cli) instalado
-  (`npm install -g supabase` o el método de tu SO)
-- Una cámara (webcam o IP/RTSP) para el servicio de visión
+## Supabase local
 
-## 2. Levantar Supabase localmente
+Requisitos: Docker Desktop activo y Supabase CLI. Desde esta carpeta:
 
-Supabase se administra con su propio CLI, no con nuestro
-`docker-compose.yml` — el CLI ya orquesta sus contenedores internos
-(Postgres, GoTrue, Realtime, Studio, etc.) con la configuración correcta.
-
-```bash
-supabase init      # solo la primera vez, dentro de este repo
-supabase start     # levanta todo el stack de Supabase en Docker
-supabase status    # muestra las URLs y las keys (anon, service_role, jwt secret)
+```powershell
+./supabase.exe start
+./supabase.exe db reset
+./supabase.exe status
 ```
 
-Copia los valores de `supabase status` a un archivo `.env` en la raíz
-del proyecto (usa `.env.example` como plantilla). Solo necesitas dos
-valores: `SUPABASE_URL` (el "Project URL") y `SUPABASE_SERVICE_ROLE_KEY`
-(la llave **Secret**, `sb_secret_...` — en versiones nuevas del CLI
-reemplaza a la antigua `service_role key`, pero funciona igual en el
-código). No hace falta la llave "Publishable"/`anon` ni un JWT secret:
-la API valida los tokens llamando directamente a Supabase Auth.
+`db reset` aplica las migraciones y el seed local. En una base que ya registró `0001` y `0002`, `supabase db push` aplica `0003_uuid_schema.sql`, convierte los IDs BIGINT existentes a UUID y preserva las relaciones del historial. Si el esquema se creó manualmente con el script UUID anterior y no hay historial de migraciones, primero revisa el estado de la base y alinea el historial de Supabase CLI; no ejecutes `db push` a ciegas. Para poblar registros en un proyecto remoto, aplica el esquema validado y después ejecuta `supabase/scripts/rf01_rf02_rf20_espacios.sql` en el SQL Editor. La conversión cambia los IDs de espacios; actualiza integraciones externas que guardaran IDs numéricos y toma un backup antes de migrar datos reales.
 
-## 3. Aplicar el esquema (tablas, RLS, función de cercanía, Realtime)
+El mapa solo necesita la clave publicable/anon y dispone de lectura anónima mediante RLS. El backend y la cámara usan una clave secreta/service-role únicamente en el equipo de confianza. Nunca pongas esa clave dentro de Flutter.
 
-```bash
-supabase db push
+La migración `supabase/migrations/0006_reservas_vehiculos.sql` agrega reservas temporales, tipos de vehículo y la tabla privada de propietarios de reservas. Debe aplicarse antes de iniciar la nueva versión de FastAPI. Los espacios nuevos comienzan con `tipo_vehiculo = 'MIXTO'`; así se muestran en todos los filtros hasta que se asigne un tipo específico.
+
+## FastAPI
+
+```powershell
+Copy-Item .env.example .env
+# Copia también VISION_STREAM_TOKEN a api/.env y configúralo en la consola
+# donde arrancas vision_module.
+docker compose up --build api
 ```
 
-Esto ejecuta `supabase/migrations/0001_init.sql`, que crea:
+La API se publica en `http://localhost:8000`; el contrato está en `/docs`. Requiere token Supabase para perfil, reportes, historial y operaciones de validador. La API verifica el rol `VALIDADOR` o `ADMIN` en las operaciones administrativas.
 
-- `perfiles` (rol: CONDUCTOR / VALIDADOR / ADMIN, puntos de karma)
-- `espacios` (estado LIBRE/OCUPADO, ROI de cámara, ubicación geográfica)
-- `historial_estados` (auditoría de cada cambio, con su fuente)
-- políticas RLS (lectura para autenticados, escritura solo vía backend)
-- la tabla `espacios` publicada en Realtime (RF7)
+## Flutter
 
-## 4. Configurar los espacios y la cámara
-
-Edita `vision/config/camaras.json` con el `id_supabase` de cada fila que
-insertes en la tabla `espacios` (vía Supabase Studio o SQL) y el
-polígono de píxeles (`poligono_roi`) que delimita cada puesto en el
-frame de tu cámara.
-
-## 5. Levantar la API y el servicio de visión
-
-```bash
-docker compose up --build
+```powershell
+cd app
+flutter pub get
+flutter test
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000 --dart-define=SUPABASE_URL=http://10.0.2.2:54321 --dart-define=SUPABASE_PUBLISHABLE_KEY=sb_publishable_TU_CLAVE
 ```
 
-- API disponible en `http://localhost:8000` (docs interactivas en
-  `http://localhost:8000/docs`)
-- El servicio de visión empieza a leer la cámara y solo escribe en
-  Supabase cuando el estado de un espacio cambia
+Para un teléfono físico sustituye `10.0.2.2` por la IP local del computador. El mapa funciona sin cuenta; el botón de inicio de sesión habilita reportes. A los validadores y administradores se les muestran acciones de forzado e historial. El usuario debe recibir su rol desde el SQL Editor, no desde metadatos de registro.
 
-> **Nota sobre la cámara en Docker:** el passthrough de webcam funciona
-> bien en Linux (`/dev/video0`). En Windows/Mac con Docker Desktop no
-> es confiable — en ese caso corre `python detectar.py` nativo (fuera
-> de Docker) o usa una cámara IP/RTSP como `fuente_video`.
+## Módulo de cámara
 
-## 6. Probar los endpoints de la API
+En otra consola de PowerShell, instala dependencias y define credenciales solo en esa sesión:
 
-```bash
-# Registro y login los maneja Supabase Auth directamente (no la API)
-curl http://localhost:8000/salud
-
-curl -H "Authorization: Bearer <access_token_supabase>" \
-     http://localhost:8000/perfil/me
-
-curl -X POST http://localhost:8000/espacios/1/forzar-estado \
-     -H "Authorization: Bearer <access_token_de_un_validador>" \
-     -H "Content-Type: application/json" \
-     -d '{"estado": "OCUPADO", "minutos_bloqueo": 30}'
+```powershell
+cd C:\Users\Fercho\Documents\Aplicaciones-Mobiles
+./vision_module/.venv/Scripts/python.exe -m pip install -r vision_module/requirements.txt
+$env:SUPABASE_URL = "http://127.0.0.1:54321"
+$env:SUPABASE_SERVICE_ROLE_KEY = "TU_CLAVE_SECRETA_LOCAL"
+$env:VISION_STREAM_TOKEN = "EL_MISMO_SECRETO_CONFIGURADO_EN_api/.env"
+./vision_module/.venv/Scripts/python.exe vision_module/main.py
 ```
 
-## Pendiente (fuera de este alcance)
+Para Supabase remoto usa la URL HTTPS. La consola ya no abre una ventana nativa: el frame anotado llega a `/admin` por `/video_feed`. Ajusta los ROI desde el panel o con las herramientas de calibración; el detector cuenta píxeles contrastados y no clasifica autos semánticamente. Lee `vision_module/README.md` para diagnóstico y límites.
 
-- **App Flutter**: ya está en `app/` — pantalla de login/registro y
-  pantalla principal (mapa + lista de espacios + botones de reporte),
-  conectada a Supabase Realtime y a esta API. Ver `app/README.md` para
-  generar los proyectos nativos y correrla.
-- **Panel web para Validadores/Admin**: se puede reconstruir en Vue.js
-  (como estaba planeado originalmente) apuntando a esta misma API y a
-  Supabase, o cubrirse dentro de la propia app Flutter (falta UI para
-  RF5, el endpoint ya existe).
-- **Pagos (Payphone/Placetopay)**: integración futura, no forma parte
-  del MVP.
+## Validación disponible
+
+- `flutter analyze` y `flutter test` verifican el cliente Flutter.
+- El módulo de visión puede probarse con webcam simulada y respuestas HTTP simuladas; ello no demuestra conectividad contra el Supabase del usuario ni calibración física.
+- La prueba final requiere Docker/Supabase en marcha, clave local y permiso de cámara. Detener el proceso de visión debe volver gris el marcador tras vencer el heartbeat (3 segundos).
+
+Pagos, reservas permanentes y reconocimiento de placas quedan fuera del MVP.

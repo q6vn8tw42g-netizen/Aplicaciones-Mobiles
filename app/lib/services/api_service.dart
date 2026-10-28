@@ -18,6 +18,48 @@ class ApiService {
     };
   }
 
+  Future<Map<String, dynamic>> reservarEspacio({
+    required String espacioId,
+    String? tipoVehiculo,
+  }) async {
+    final respuesta = await http.post(
+      Uri.parse('${AppConfig.apiBaseUrl}/api/espacios/$espacioId/reservar'),
+      headers: _headers(),
+      body: jsonEncode({
+        if (tipoVehiculo != null && tipoVehiculo != 'TODOS')
+          'tipo_vehiculo': tipoVehiculo,
+      }),
+    );
+    if (respuesta.statusCode >= 400)
+      throw Exception(_mensajeDeError(respuesta.body));
+    return (jsonDecode(respuesta.body) as Map).cast<String, dynamic>();
+  }
+
+  Future<void> cancelarReserva(String espacioId) async {
+    final respuesta = await http.patch(
+      Uri.parse('${AppConfig.apiBaseUrl}/api/espacios/$espacioId/cancelar'),
+      headers: _headers(),
+    );
+    if (respuesta.statusCode >= 400)
+      throw Exception(_mensajeDeError(respuesta.body));
+  }
+
+  Future<Set<String>> obtenerMisReservas() async {
+    final respuesta = await http.get(
+      Uri.parse('${AppConfig.apiBaseUrl}/api/reservas/mias'),
+      headers: _headers(),
+    );
+    if (respuesta.statusCode >= 400) {
+      throw Exception(_mensajeDeError(respuesta.body));
+    }
+    final filas = jsonDecode(respuesta.body);
+    if (filas is! List) throw Exception('La lista de reservas no es válida.');
+    return filas
+        .whereType<Map>()
+        .map((fila) => fila['espacio_id'].toString())
+        .toSet();
+  }
+
   /// RF3/RF4/RF6: reporte de conductor con validación de cercanía en el backend.
   Future<void> reportar({
     required String espacioId,
@@ -59,6 +101,19 @@ class ApiService {
     if (respuesta.statusCode >= 400) {
       throw Exception(_mensajeDeError(respuesta.body));
     }
+  }
+
+  Future<List<Map<String, dynamic>>> obtenerHistorial(String espacioId) async {
+    final respuesta = await http.get(
+      Uri.parse('${AppConfig.apiBaseUrl}/espacios/$espacioId/historial'),
+      headers: _headers(),
+    );
+    if (respuesta.statusCode >= 400) {
+      throw Exception(_mensajeDeError(respuesta.body));
+    }
+    final datos = jsonDecode(respuesta.body);
+    if (datos is! List) throw Exception('El historial recibido no es válido.');
+    return datos.cast<Map<String, dynamic>>();
   }
 
   String _mensajeDeError(String cuerpo) {

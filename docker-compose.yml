@@ -1,11 +1,11 @@
 # ============================================================
-# EstacionaYa · Servicios propios (API + Visión)
+# EstacionaYa · API de negocio
 #
 # Supabase NO se levanta aquí: se administra con el Supabase CLI
 # (`supabase start`), que ya maneja su propio stack de Docker
 # (Postgres, Auth, Realtime, Studio, etc.). Este compose es solo
-# para nuestros dos servicios: la API de negocio y el servicio
-# de visión por cámara. Ver README.md para el orden de arranque.
+# para la API de negocio. La visión se ejecuta en el host para acceder
+# de forma fiable a la webcam.
 # ============================================================
 version: "3.9"
 
@@ -20,20 +20,4 @@ services:
     ports:
       - "8000:8000"
     env_file:
-      - .env
-
-  vision:
-    build:
-      context: ./vision
-    container_name: estacionaya_vision
-    restart: unless-stopped
-    volumes:
-      - ./vision:/app
-    env_file:
-      - .env
-    # Acceso a la cámara física del host (Linux). En Windows/Mac con
-    # Docker Desktop el passthrough de webcam no funciona bien: en ese
-    # caso corre este servicio nativo (python detectar.py) o usa una
-    # cámara IP/RTSP como fuente_video en config/camaras.json.
-    devices:
-      - "/dev/video0:/dev/video0"
+      - ./api/.env

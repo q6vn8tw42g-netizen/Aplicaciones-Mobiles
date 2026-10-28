@@ -31,6 +31,10 @@ class SupabaseService {
   Future<Map<String, dynamic>?> obtenerMiPerfil() async {
     final usuario = _client.auth.currentUser;
     if (usuario == null) return null;
-    return await _client.from('perfiles').select().eq('id', usuario.id).single();
+    return await _client
+        .from('perfiles')
+        .select()
+        .eq('id', usuario.id)
+        .single();
   }
 }

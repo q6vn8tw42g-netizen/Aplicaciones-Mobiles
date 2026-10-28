@@ -1,0 +1,726 @@
+"""Detector por zonas UPEC. Solo PATCH al confirmar un cambio tras 20 frames."""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import queue
+import sys
+import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlparse
+
+import cv2
+import requests
+from dotenv import load_dotenv
+
+ROOT = Path(__file__).resolve().parent
+# Carga .env local en vision_module y, como respaldo, el .env de la carpeta api
+load_dotenv(ROOT / ".env")
+load_dotenv(ROOT.parent / "api" / ".env")
+
+ZONES_FILE = ROOT / "zonas.json"
+FRAMES_CONFIRMACION = 20
+UMBRAL_OCUPACION = 0.12
+TIMEOUT = (3.05, 8)
+LOG = logging.getLogger("vision_module")
+
+
+@dataclass
+class Zona:
+    id: str
+    nombre: str
+    roi: tuple[int, int, int, int]
+    confirmado: str
+    expiracion_reserva: datetime | None = None
+    tipo_vehiculo: str = "MIXTO"
+    vehiculo_detectado: str | None = None
+    candidato: str | None = None
+    frames: int = 0
+    reanudar_en: float = 0.0
+
+    def observar(self, estado: str) -> str | None:
+        if estado == self.confirmado:
+            self.candidato, self.frames = None, 0
+            return None
+        if estado != self.candidato:
+            self.candidato, self.frames = estado, 1
+        else:
+            self.frames += 1
+        return estado if self.frames >= FRAMES_CONFIRMACION else None
+
+    def aceptar(self, estado: str) -> None:
+        self.confirmado, self.candidato, self.frames = estado, None, 0
+
+
+def cargar_configuracion() -> tuple[int, tuple[int, int], list[dict]]:
+    try:
+        data = json.loads(ZONES_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise RuntimeError(f"Falta {ZONES_FILE}; ejecuta configurar_casillas.py.") from None
+    size = tuple(data.get("frame_size", [640, 480]))
+    zones = data.get("zones", [])
+    if len(size) != 2 or not zones:
+        raise RuntimeError("zonas.json debe incluir frame_size y al menos una zona.")
+    ids = [str(z.get("id", "")).strip() for z in zones]
+    if any(not value for value in ids) or len(ids) != len(set(ids)):
+        raise RuntimeError("Cada zona requiere un id no vacío y único.")
+    for z in zones:
+        x, y, w, h = z["roi"]
+        if min(x, y) < 0 or w <= 0 or h <= 0 or x + w > size[0] or y + h > size[1]:
+            raise RuntimeError(f"ROI fuera del frame: {z}")
+    return int(data.get("camera_index", 0)), (int(size[0]), int(size[1])), zones
+
+
+class SupabaseREST:
+    def __init__(self) -> None:
+        url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+        parsed = urlparse(url)
+        local = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}
+        if not key or not parsed.netloc or (parsed.scheme != "https" and not local):
+            raise RuntimeError("Configura SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY en el archivo .env.")
+        self.rest_url = f"{url}/rest/v1"
+        self.url = f"{url}/rest/v1/espacios"
+        self.session = requests.Session()
+        self.session.headers.update({"apikey": key, "Accept": "application/json"})
+        if not key.startswith("sb_secret_"):
+            self.session.headers["Authorization"] = f"Bearer {key}"
+
+    def leer(self, camera_id: str) -> dict:
+        r = self.session.get(
+            self.url,
+            params={
+                "camara_id": f"eq.{camera_id}",
+                "select": "estado,expiracion_reserva,tipo_vehiculo,vehiculo_detectado",
+            },
+            timeout=TIMEOUT,
+        )
+        r.raise_for_status()
+        rows = r.json()
+        if len(rows) != 1 or rows[0].get("estado") not in ("LIBRE", "OCUPADO", "RESERVADO", "SIN_SERVICIO"):
+            raise RuntimeError(f"Debe existir exactamente una fila válida para {camera_id}.")
+        return rows[0]
+
+    def leer_configuraciones_camaras(self, camera_ids: list[str]) -> list[dict]:
+        """Descarga al arrancar los ROI guardados en config_camaras."""
+        if not camera_ids:
+            return []
+        response = self.session.get(
+            f"{self.rest_url}/config_camaras",
+            params={
+                "select": "camara_id,x,y,width,height,frame_width,frame_height",
+                "camara_id": f"in.({','.join(camera_ids)})",
+            },
+            timeout=TIMEOUT,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        if not isinstance(rows, list):
+            raise RuntimeError("Supabase devolvió una configuración de cámaras inválida.")
+        return rows
+
+    def patch_cambio(
+        self,
+        camera_id: str,
+        antes: str,
+        despues: str,
+        vehiculo_detectado: str | None = None,
+    ) -> tuple[bool, dict | None]:
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        r = self.session.patch(
+            self.url,
+            params={
+                "camara_id": f"eq.{camera_id}",
+                "estado": f"eq.{antes}",
+                "or": f"(bloqueado_hasta.is.null,bloqueado_hasta.lte.{now})",
+                "select": "estado",
+            },
+            json={
+                "estado": despues,
+                "estado_reserva": despues,
+                "fuente": "CAMARA",
+                "forzado_por": None,
+                "bloqueado_hasta": None,
+                "expiracion_reserva": None,
+                "vehiculo_detectado": vehiculo_detectado if despues == "OCUPADO" else None,
+            },
+            headers={"Prefer": "return=representation"},
+            timeout=TIMEOUT,
+        )
+        r.raise_for_status()
+        rows = r.json() if r.content else []
+        if len(rows) == 1 and rows[0].get("estado") == despues:
+            if antes == "RESERVADO" and despues == "OCUPADO":
+                try:
+                    self.session.delete(
+                        f"{self.rest_url}/reservas_espacios",
+                        params={"camara_id": f"eq.{camera_id}"},
+                        timeout=TIMEOUT,
+                    ).raise_for_status()
+                except requests.RequestException:
+                    LOG.warning("No se pudo limpiar el propietario privado de la reserva de %s.", camera_id)
+            return True, None
+        # Un resultado vacío puede significar bloqueo del validador o cambio concurrente.
+        actual = self.session.get(
+            self.url,
+            params={
+                "camara_id": f"eq.{camera_id}",
+                "select": "estado,bloqueado_hasta,expiracion_reserva,vehiculo_detectado",
+            },
+            timeout=TIMEOUT,
+        )
+        actual.raise_for_status()
+        rows = actual.json()
+        if len(rows) != 1:
+            raise RuntimeError(f"No se pudo releer el espacio {camera_id} después del PATCH.")
+        return False, rows[0]
+
+    def patch_vehiculo_detectado(self, camera_id: str, tipo: str) -> bool:
+        """Actualiza solo la clase detectada sin tocar estado ni reserva."""
+        response = self.session.patch(
+            self.url,
+            params={"camara_id": f"eq.{camera_id}", "estado": "eq.OCUPADO", "select": "camara_id"},
+            json={"vehiculo_detectado": tipo},
+            headers={"Prefer": "return=representation"},
+            timeout=TIMEOUT,
+        )
+        response.raise_for_status()
+        rows = response.json() if response.content else []
+        return len(rows) == 1
+
+    def close(self) -> None:
+        self.session.close()
+
+
+class FramePublisher:
+    """Publica solo el último frame anotado; nunca bloquea el bucle de detección."""
+
+    def __init__(self) -> None:
+        self.url = os.getenv(
+            "VISION_STREAM_URL", "http://192.168.0.122:8000/vision/frame"
+        ).strip()
+        self.token = os.getenv("VISION_STREAM_TOKEN", "").strip()
+        self.frames: queue.Queue[bytes] = queue.Queue(maxsize=1)
+        self.stop_event = threading.Event()
+        self.worker: threading.Thread | None = None
+        if self.token:
+            self.worker = threading.Thread(
+                target=self._enviar_frames,
+                name="vision-frame-publisher",
+                daemon=True,
+            )
+            self.worker.start()
+        else:
+            LOG.warning("VISION_STREAM_TOKEN no configurado; stream web deshabilitado.")
+
+    def publicar(self, frame) -> None:
+        if not self.token:
+            return
+        ok, encoded = cv2.imencode(
+            ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80]
+        )
+        if not ok:
+            return
+        try:
+            self.frames.put_nowait(encoded.tobytes())
+        except queue.Full:
+            try:
+                self.frames.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.frames.put_nowait(encoded.tobytes())
+            except queue.Full:
+                pass
+
+    def _enviar_frames(self) -> None:
+        last_error_log = 0.0
+        with requests.Session() as session:
+            while not self.stop_event.is_set():
+                try:
+                    payload = self.frames.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+                try:
+                    response = session.post(
+                        self.url,
+                        data=payload,
+                        headers={
+                            "Content-Type": "image/jpeg",
+                            "X-Vision-Token": self.token,
+                        },
+                        timeout=(1, 2),
+                    )
+                    response.raise_for_status()
+                except requests.RequestException as error:
+                    now = time.monotonic()
+                    if now - last_error_log >= 10:
+                        LOG.warning("No se pudo publicar el frame al panel: %s", error)
+                        last_error_log = now
+
+    def close(self) -> None:
+        self.stop_event.set()
+        if self.worker is not None:
+            self.worker.join(timeout=2)
+
+
+class HeartbeatPublisher:
+    """Renueva la señal de conexión sin bloquear captura, detección ni MJPEG."""
+
+    def __init__(self, api: SupabaseREST, camera_ids: list[str]) -> None:
+        self.url = f"{api.rest_url}/vision_heartbeat"
+        self.camera_ids = sorted(set(camera_ids))
+        self.headers = dict(api.session.headers)
+        self.headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
+        self.stop_event = threading.Event()
+        self.worker = threading.Thread(
+            target=self._publicar,
+            name="vision-heartbeat",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self.worker.start()
+
+    def _publicar(self) -> None:
+        with requests.Session() as session:
+            session.headers.update(self.headers)
+            last_error_log = 0.0
+            while not self.stop_event.is_set():
+                now = datetime.now(timezone.utc).isoformat()
+                try:
+                    response = session.post(
+                        self.url,
+                        params={"on_conflict": "camara_id"},
+                        json=[
+                            {"camara_id": camera_id, "ultimo_contacto": now}
+                            for camera_id in self.camera_ids
+                        ],
+                        timeout=(1, 2),
+                    )
+                    response.raise_for_status()
+                except requests.RequestException as error:
+                    current = time.monotonic()
+                    if current - last_error_log >= 30:
+                        LOG.warning("No se pudo renovar el heartbeat de la cámara: %s", error)
+                        last_error_log = current
+                self.stop_event.wait(1)
+
+    def close(self) -> None:
+        self.stop_event.set()
+        self.worker.join(timeout=2)
+
+
+class YOLODetector:
+    """Inferencia desacoplada del bucle que publica el stream MJPEG."""
+
+    COCO_TO_VEHICLE = {
+        "motorcycle": "MOTO",
+        "car": "AUTO",
+        "truck": "CAMIONETA",
+    }
+
+    def __init__(self) -> None:
+        self.model_path = os.getenv("VISION_YOLO_MODEL", "yolov8n.pt").strip()
+        self.image_size = int(os.getenv("VISION_YOLO_IMGSZ", "416"))
+        self.confidence = float(os.getenv("VISION_YOLO_CONF", "0.35"))
+        self.frames: queue.Queue[tuple[object, list[tuple[str, tuple[int, int, int, int]]]]] = queue.Queue(maxsize=1)
+        self.results: queue.Queue[tuple[int, dict[str, dict | None]]] = queue.Queue(maxsize=1)
+        self.stop_event = threading.Event()
+        self.ready = threading.Event()
+        self.failed = threading.Event()
+        self.worker: threading.Thread | None = None
+        self.sequence = 0
+
+    def start(self) -> None:
+        self.worker = threading.Thread(target=self._inferir, name="vision-yolo", daemon=True)
+        self.worker.start()
+
+    def enviar(self, frame, zonas: list[Zona]) -> None:
+        snapshot = [(zona.id, zona.roi) for zona in zonas]
+        item = (frame.copy(), snapshot)
+        try:
+            self.frames.put_nowait(item)
+        except queue.Full:
+            try:
+                self.frames.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.frames.put_nowait(item)
+            except queue.Full:
+                pass
+
+    def resultado_reciente(self) -> tuple[int, dict[str, dict | None]] | None:
+        latest = None
+        while True:
+            try:
+                latest = self.results.get_nowait()
+            except queue.Empty:
+                return latest
+
+    def _inferir(self) -> None:
+        try:
+            from ultralytics import YOLO
+
+            model = YOLO(self.model_path)
+            self.ready.set()
+            LOG.info("YOLO listo: modelo=%s imgsz=%d", self.model_path, self.image_size)
+        except Exception:
+            self.failed.set()
+            LOG.exception("No se pudo inicializar YOLO; se usará el detector clásico de respaldo.")
+            return
+
+        while not self.stop_event.is_set():
+            try:
+                frame, zones = self.frames.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            try:
+                result = model.predict(
+                    source=frame,
+                    imgsz=self.image_size,
+                    conf=self.confidence,
+                    verbose=False,
+                    save=False,
+                )[0]
+                found: dict[str, dict | None] = {zone_id: None for zone_id, _ in zones}
+                boxes = result.boxes
+                if boxes is not None:
+                    for box in boxes:
+                        class_id = int(box.cls.item())
+                        class_name = str(result.names.get(class_id, "")).casefold()
+                        vehicle_type = self.COCO_TO_VEHICLE.get(class_name)
+                        if vehicle_type is None:
+                            continue
+                        x1, y1, x2, y2 = (float(value) for value in box.xyxy[0].tolist())
+                        center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
+                        confidence = float(box.conf.item())
+                        for zone_id, (x, y, width, height) in zones:
+                            if x <= center_x <= x + width and y <= center_y <= y + height:
+                                prior = found[zone_id]
+                                if prior is None or confidence > prior["confidence"]:
+                                    found[zone_id] = {
+                                        "tipo": vehicle_type,
+                                        "confidence": confidence,
+                                        "box": (int(x1), int(y1), int(x2), int(y2)),
+                                    }
+                self.sequence += 1
+                snapshot = (self.sequence, found)
+                try:
+                    self.results.put_nowait(snapshot)
+                except queue.Full:
+                    try:
+                        self.results.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        self.results.put_nowait(snapshot)
+                    except queue.Full:
+                        pass
+            except Exception:
+                self.failed.set()
+                LOG.exception("Falló la inferencia YOLO; se usará el detector clásico de respaldo.")
+                return
+
+    def close(self) -> None:
+        self.stop_event.set()
+        if self.worker is not None:
+            self.worker.join(timeout=2)
+
+
+def abrir_camara(camera_index: int) -> cv2.VideoCapture:
+    """Abre la cámara usando DirectShow en Windows con respaldo al backend por defecto."""
+    if os.name == "nt":
+        print(f">>> [3/5] Abriendo cámara {camera_index} con DirectShow (CAP_DSHOW)...", flush=True)
+        cam = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+        if cam.isOpened():
+            return cam
+        cam.release()
+        print(">>> DirectShow no abrió la cámara; intentando backend estándar...", flush=True)
+    else:
+        print(f">>> [3/5] Abriendo cámara {camera_index}...", flush=True)
+    return cv2.VideoCapture(camera_index)
+
+
+def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s: %(message)s",
+        stream=sys.stdout,
+        force=True,
+    )
+    api: SupabaseREST | None = None
+    camera: cv2.VideoCapture | None = None
+    publisher: FramePublisher | None = None
+    detector: YOLODetector | None = None
+    heartbeat: HeartbeatPublisher | None = None
+    try:
+        print(">>> [1/5] Cargando configuración local (zonas.json)...", flush=True)
+        camera_index, frame_size, raw_zones = cargar_configuracion()
+        print(
+            f">>> Configuración cargada: cámara={camera_index}, resolución={frame_size}, zonas={len(raw_zones)}",
+            flush=True,
+        )
+
+        print(">>> [2/5] Conectando a Supabase y consultando estado de zonas...", flush=True)
+        api = SupabaseREST()
+        zonas = []
+        for z in raw_zones:
+            camera_data = api.leer(str(z["id"]))
+            expiracion = camera_data.get("expiracion_reserva")
+            expiracion_dt = (
+                datetime.fromisoformat(expiracion.replace("Z", "+00:00"))
+                if expiracion
+                else None
+            )
+            zonas.append(
+                Zona(
+                    id=str(z["id"]),
+                    nombre=z.get("name", str(z["id"])),
+                    roi=tuple(map(int, z["roi"])),
+                    confirmado=camera_data["estado"],
+                    expiracion_reserva=expiracion_dt,
+                    tipo_vehiculo=camera_data.get("tipo_vehiculo") or "MIXTO",
+                    vehiculo_detectado=camera_data.get("vehiculo_detectado"),
+                )
+            )
+
+        camera = abrir_camara(camera_index)
+        print(f">>> ¿Cámara abierta?: {camera.isOpened()}", flush=True)
+        if not camera.isOpened():
+            raise RuntimeError(f"No se pudo abrir la cámara {camera_index}.")
+
+        print(">>> [4/5] Leyendo frame inicial de la cámara...", flush=True)
+        # Usa el primer frame para obtener las dimensiones reales negociadas por la webcam.
+        ok, first_frame = camera.read()
+        print(f">>> ¿Primer frame leído correctamente?: {ok}", flush=True)
+        if not ok or first_frame is None:
+            raise RuntimeError("No se pudo leer el frame inicial de la cámara.")
+
+        # shape refleja las dimensiones efectivas del frame entregado por OpenCV;
+        # CAP_PROP_* puede reportar valores negociados distintos según el driver.
+        camera_height, camera_width = first_frame.shape[:2]
+        property_width = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+        property_height = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        LOG.info(
+            "Resolución real del frame: %dx%d (CAP_PROP: %dx%d)",
+            camera_width,
+            camera_height,
+            property_width,
+            property_height,
+        )
+
+        # Descarga la configuración más reciente antes del bucle de captura/detección.
+        camera_ids = [zona.id for zona in zonas]
+        configuraciones = api.leer_configuraciones_camaras(camera_ids)
+        LOG.info("Configuraciones ROI descargadas de Supabase: %d", len(configuraciones))
+        por_camara = {str(row["camara_id"]): row for row in configuraciones}
+        for zona in zonas:
+            config = por_camara.get(zona.id)
+            if not config:
+                continue
+
+            canvas_width = int(config["frame_width"])
+            canvas_height = int(config["frame_height"])
+            if canvas_width <= 0 or canvas_height <= 0:
+                LOG.warning("ROI ignorado para %s: dimensiones Canvas inválidas.", zona.id)
+                continue
+
+            x, y, width, height = (
+                int(config["x"]),
+                int(config["y"]),
+                int(config["width"]),
+                int(config["height"]),
+            )
+            # Canvas → resolución capturada → resolución de procesamiento existente.
+            raw_left = round(x * camera_width / canvas_width)
+            raw_top = round(y * camera_height / canvas_height)
+            raw_right = round((x + width) * camera_width / canvas_width)
+            raw_bottom = round((y + height) * camera_height / canvas_height)
+            left = round(raw_left * frame_size[0] / camera_width)
+            top = round(raw_top * frame_size[1] / camera_height)
+            right = round(raw_right * frame_size[0] / camera_width)
+            bottom = round(raw_bottom * frame_size[1] / camera_height)
+
+            left = max(0, min(left, frame_size[0] - 1))
+            top = max(0, min(top, frame_size[1] - 1))
+            right = max(left + 1, min(right, frame_size[0]))
+            bottom = max(top + 1, min(bottom, frame_size[1]))
+            zona.roi = (left, top, right - left, bottom - top)
+            LOG.info(
+                "Nuevas coordenadas aplicadas para %s: X=%d, Y=%d, W=%d, H=%d "
+                "(cámara %dx%d, Canvas %dx%d)",
+                zona.id,
+                left,
+                top,
+                right - left,
+                bottom - top,
+                camera_width,
+                camera_height,
+                canvas_width,
+                canvas_height,
+            )
+
+        print(">>> [5/5] Iniciando hilos de YOLO, Heartbeat y Stream...", flush=True)
+        detector = YOLODetector()
+        detector.start()
+        heartbeat = HeartbeatPublisher(api, [zona.id for zona in zonas])
+        heartbeat.start()
+        publisher = FramePublisher()
+        LOG.info("Detector activo: %d zonas; modelo YOLO cargando en segundo plano.", len(zonas))
+        pending_frame = first_frame
+        detecciones_yolo: dict[str, dict | None] = {}
+        secuencia_yolo = 0
+        secuencia_procesada = 0
+        while True:
+            if pending_frame is not None:
+                frame, pending_frame = pending_frame, None
+            else:
+                ok, frame = camera.read()
+                if not ok or frame is None:
+                    raise RuntimeError("Se perdió la lectura de cámara; no se cambian estados.")
+            frame = cv2.resize(frame, frame_size)
+            detector.enviar(frame, zonas)
+            resultado_yolo = detector.resultado_reciente()
+            if resultado_yolo is not None:
+                secuencia_yolo, detecciones_yolo = resultado_yolo
+            usar_yolo = detector.ready.is_set() and not detector.failed.is_set() and secuencia_yolo > 0
+            nueva_prediccion = usar_yolo and secuencia_yolo != secuencia_procesada
+            if nueva_prediccion:
+                secuencia_procesada = secuencia_yolo
+            display = frame.copy()
+            for zona in zonas:
+                x, y, w, h = zona.roi
+                deteccion = detecciones_yolo.get(zona.id) if usar_yolo else None
+                if usar_yolo:
+                    observed = "OCUPADO" if deteccion else "LIBRE"
+                    ratio = float(deteccion["confidence"]) if deteccion else 0.0
+                    should_observe = nueva_prediccion
+                    if deteccion and nueva_prediccion:
+                        tipo_detectado = str(deteccion["tipo"])
+                        if zona.confirmado == "OCUPADO" and tipo_detectado != zona.vehiculo_detectado:
+                            if api.patch_vehiculo_detectado(zona.id, tipo_detectado):
+                                zona.vehiculo_detectado = tipo_detectado
+                                LOG.info("%s: tipo de vehículo detectado=%s", zona.id, tipo_detectado)
+                else:
+                    crop = frame[y:y+h, x:x+w]
+                    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+                    binary = cv2.adaptiveThreshold(
+                        blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                        cv2.THRESH_BINARY_INV, 25, 8,
+                    )
+                    ratio = cv2.countNonZero(binary) / float(w * h)
+                    observed = "OCUPADO" if ratio >= UMBRAL_OCUPACION else "LIBRE"
+                    should_observe = True
+
+                # Un ROI vacío conserva una reserva activa; solo la expiración del
+                # backend o una detección confirmada de vehículo cambia su estado.
+                if (
+                    zona.confirmado == "RESERVADO"
+                    and observed == "LIBRE"
+                ):
+                    if zona.expiracion_reserva and datetime.now(timezone.utc) >= zona.expiracion_reserva:
+                        zona.aceptar("LIBRE")
+                        zona.expiracion_reserva = None
+                    else:
+                        zona.candidato, zona.frames = None, 0
+                        should_observe = False
+
+                change = zona.observar(observed) if should_observe else None
+                if change and time.monotonic() >= zona.reanudar_en:
+                    antes = zona.confirmado
+                    vehicle_type = str(deteccion["tipo"]) if deteccion and change == "OCUPADO" else None
+                    actualizado, remoto = api.patch_cambio(zona.id, antes, change, vehicle_type)
+                    if (
+                        not actualizado
+                        and remoto
+                        and remoto.get("estado") in ("RESERVADO", "LIBRE")
+                        and change == "OCUPADO"
+                    ):
+                        actualizado, remoto = api.patch_cambio(
+                            zona.id, remoto["estado"], change, vehicle_type
+                        )
+                    if actualizado:
+                        LOG.info(
+                            "%s: %s -> %s%s",
+                            zona.id,
+                            antes,
+                            change,
+                            f" ({vehicle_type})" if vehicle_type else "",
+                        )
+                        zona.aceptar(change)
+                        zona.expiracion_reserva = None
+                        zona.vehiculo_detectado = vehicle_type
+                    else:
+                        estado_remoto = remoto["estado"]
+                        bloqueo = remoto.get("bloqueado_hasta")
+                        if bloqueo:
+                            fecha = datetime.fromisoformat(bloqueo.replace("Z", "+00:00"))
+                            if fecha.tzinfo is None:
+                                fecha = fecha.replace(tzinfo=timezone.utc)
+                            if fecha > datetime.now(timezone.utc):
+                                zona.reanudar_en = time.monotonic() + (fecha - datetime.now(timezone.utc)).total_seconds()
+                                LOG.info("%s bloqueado por administrador hasta %s", zona.id, bloqueo)
+                        # Respeta cambios remotos y evita reintentar el PATCH en cada frame.
+                        zona.aceptar(estado_remoto)
+                        reserva = remoto.get("expiracion_reserva")
+                        zona.expiracion_reserva = (
+                            datetime.fromisoformat(reserva.replace("Z", "+00:00"))
+                            if reserva else None
+                        )
+                        zona.vehiculo_detectado = remoto.get("vehiculo_detectado")
+                color = (0, 0, 255) if zona.confirmado == "OCUPADO" else (0, 200, 0)
+                if zona.confirmado == "RESERVADO":
+                    color = (0, 191, 255)
+                cv2.rectangle(display, (x, y), (x+w, y+h), color, 2)
+                label = f"{zona.id} {zona.confirmado}"
+                if usar_yolo:
+                    label += f" {deteccion['tipo']} {ratio:.0%}" if deteccion else " sin vehículo"
+                    if deteccion:
+                        bx1, by1, bx2, by2 = deteccion["box"]
+                        cv2.rectangle(display, (bx1, by1), (bx2, by2), color, 2)
+                else:
+                    label += f" {ratio:.0%}"
+                label += f" [{zona.frames}/{FRAMES_CONFIRMACION}]"
+                cv2.putText(
+                    display,
+                    label,
+                    (x, max(18, y-7)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    color,
+                    2,
+                    cv2.LINE_AA,
+                )
+            publisher.publicar(display)
+        return 0
+    except KeyboardInterrupt:
+        print("\n>>> Deteniendo detector por solicitud del usuario...", flush=True)
+        return 0
+    except (requests.RequestException, RuntimeError, cv2.error) as error:
+        LOG.error("%s", error)
+        return 1
+    except Exception:
+        LOG.exception("Error inesperado al iniciar o ejecutar el módulo de visión:")
+        return 1
+    finally:
+        if heartbeat is not None:
+            heartbeat.close()
+        if detector is not None:
+            detector.close()
+        if publisher is not None:
+            publisher.close()
+        if camera is not None:
+            camera.release()
+        if api is not None:
+            api.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

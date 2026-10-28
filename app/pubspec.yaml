@@ -17,11 +17,20 @@ dependencies:
   http: ^1.2.1
   geolocator: ^12.0.0
   url_launcher: ^6.3.2
+  flutter_local_notifications: ^19.5.0
+  timezone: ^0.10.1
 
 dev_dependencies:
+  flutter_launcher_icons: ^0.14.4
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/logo.png"
+  remove_alpha_ios: true
 
 flutter:
   uses-material-design: true

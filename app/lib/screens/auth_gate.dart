@@ -1,34 +1,48 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../providers/espacios_provider.dart';
 import 'home_screen.dart';
-import 'login_screen.dart';
 
-class AuthGate extends StatelessWidget {
+class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
 
   @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  late final EspaciosProvider _provider;
+  StreamSubscription<AuthState>? _authSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _provider = EspaciosProvider()..iniciar();
+    _authSubscription = Supabase.instance.client.auth.onAuthStateChange.listen(
+      (_) => _provider.actualizarSesion(),
+      onError: (Object error) =>
+          debugPrint('No se pudo observar el estado de sesión: $error'),
+    );
+  }
+
+  @override
+  void dispose() {
+    unawaited(_authSubscription?.cancel());
+    _provider.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final client = Supabase.instance.client;
-
-    return StreamBuilder<AuthState>(
-      stream: client.auth.onAuthStateChange,
-      builder: (context, snapshot) {
-        final haySesion = client.auth.currentSession != null;
-
-        if (!haySesion) {
-          return const LoginScreen();
-        }
-
-        // El provider solo se crea (y solo entonces pide datos a Supabase)
-        // una vez que sabemos que hay una sesión activa.
-        return ChangeNotifierProvider(
-          create: (_) => EspaciosProvider()..iniciar(),
-          child: const HomeScreen(),
-        );
-      },
+    // Se conserva el mismo Provider al iniciar/cerrar sesión. Así, al volver
+    // del login el flujo pendiente de reserva continúa con la sesión nueva.
+    return ChangeNotifierProvider<EspaciosProvider>.value(
+      value: _provider,
+      child: const HomeScreen(),
     );
   }
 }

@@ -92,4 +92,36 @@ void main() {
     provider.dispose();
     await controller.close();
   });
+
+  test('CAM-001 aparece sin servicio sin heartbeat y vuelve al recibir señal',
+      () async {
+    final espacios = StreamController<List<Map<String, dynamic>>>();
+    final heartbeat = StreamController<List<Map<String, dynamic>>>();
+    final provider = EspaciosProvider(
+      espaciosStream: espacios.stream,
+      heartbeatStream: heartbeat.stream,
+    );
+    await provider.iniciar();
+    await emitir(espacios, [fila()]);
+    expect(provider.espacios.single.visionEnLinea, isFalse);
+
+    await emitir(heartbeat, [
+      {
+        'camara_id': 'CAM-001',
+        'ultimo_contacto': DateTime.now().toUtc().toIso8601String(),
+      },
+    ]);
+    expect(provider.espacios.single.visionEnLinea, isTrue);
+
+    await emitir(heartbeat, [
+      {'camara_id': 'CAM-001', 'ultimo_contacto': '1970-01-01T00:00:00Z'},
+    ]);
+    expect(provider.espacios.single.visionEnLinea, isFalse);
+
+    provider.dispose();
+    expect(espacios.hasListener, isFalse);
+    expect(heartbeat.hasListener, isFalse);
+    await espacios.close();
+    await heartbeat.close();
+  });
 }

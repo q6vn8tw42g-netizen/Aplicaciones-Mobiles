@@ -1,118 +1,188 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/espacio.dart';
+import '../theme/estacionaya_theme.dart';
 
 class EspacioCard extends StatelessWidget {
   final Espacio espacio;
-  final void Function(String tipo) onReportar;
   final VoidCallback? onNavegar;
+  final bool puedeAdministrar;
+  final bool seleccionado;
+  final VoidCallback? onSeleccionar;
+  final VoidCallback? onVerHistorial;
+  final VoidCallback? onForzar;
+  final VoidCallback? onReservar;
+  final VoidCallback? onCancelarReserva;
 
   const EspacioCard({
     super.key,
     required this.espacio,
-    required this.onReportar,
     this.onNavegar,
+    this.puedeAdministrar = false,
+    this.seleccionado = false,
+    this.onSeleccionar,
+    this.onVerHistorial,
+    this.onForzar,
+    this.onReservar,
+    this.onCancelarReserva,
   });
 
   @override
   Widget build(BuildContext context) {
-    final estadoVisual = _obtenerEstadoVisual(
-      espacio.estado,
-    );
+    final estadoVisual = espacio.visionEnLinea
+        ? _obtenerEstadoVisual(espacio.estado)
+        : _obtenerEstadoVisual('SIN_SERVICIO');
 
-    final puedeEstacionarse =
-        espacio.estado == 'LIBRE';
-
-    final puedeSalir =
-        espacio.estado == 'OCUPADO';
-
-    final puedeNavegar =
-        espacio.latitud != null &&
+    final puedeNavegar = espacio.latitud != null &&
         espacio.longitud != null &&
+        espacio.estado == 'LIBRE' &&
+        espacio.visionEnLinea &&
         onNavegar != null;
 
     return Card(
-      margin: EdgeInsets.zero,
       clipBehavior: Clip.antiAlias,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              espacio.nombre,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Chip(
-              avatar: Icon(
-                estadoVisual.icono,
-                size: 16,
-                color: estadoVisual.colorTexto,
-              ),
-              label: Text(
-                estadoVisual.texto,
-              ),
-              backgroundColor:
-                  estadoVisual.colorFondo,
-              labelStyle: TextStyle(
-                color: estadoVisual.colorTexto,
-                fontSize: 12,
-              ),
-              visualDensity:
-                  VisualDensity.compact,
-              materialTapTargetSize:
-                  MaterialTapTargetSize.shrinkWrap,
-            ),
-            const SizedBox(height: 6),
-            Row(
-              mainAxisAlignment:
-                  MainAxisAlignment.end,
-              children: [
-                IconButton(
-                  tooltip: 'Abrir ruta',
-                  icon: const Icon(
-                    Icons.navigation,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(EstacionaYaTokens.radius20),
+        side: BorderSide(
+          color: seleccionado
+              ? EstacionaYaTokens.primary
+              : EstacionaYaTokens.outline,
+          width: seleccionado ? 2 : 1,
+        ),
+      ),
+      child: InkWell(
+        onTap: onSeleccionar,
+        child: Padding(
+          padding: const EdgeInsets.all(EstacionaYaTokens.space16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          espacio.nombre,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: EstacionaYaTokens.space4),
+                        Text(
+                          espacio.camaraId,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
                   ),
-                  onPressed:
-                      puedeNavegar ? onNavegar : null,
-                ),
-                const SizedBox(width: 4),
-                IconButton(
-                  tooltip: puedeEstacionarse
-                      ? 'Me estacioné aquí'
-                      : 'No disponible para estacionarse',
-                  icon: const Icon(
-                    Icons.local_parking,
+                  const SizedBox(width: EstacionaYaTokens.space8),
+                  _EstadoBadge(
+                    texto: estadoVisual.texto,
+                    color: estadoVisual.colorTexto,
+                    fondo: estadoVisual.colorFondo,
+                    icono: estadoVisual.icono,
                   ),
-                  onPressed: puedeEstacionarse
-                      ? () => onReportar(
-                            'ME_ESTACIONE',
-                          )
-                      : null,
-                ),
-                const SizedBox(width: 4),
-                IconButton(
-                  tooltip: puedeSalir
-                      ? 'Voy a salir'
-                      : 'No existe una sesión activa',
-                  icon: const Icon(
-                    Icons.directions_car,
-                  ),
-                  onPressed: puedeSalir
-                      ? () => onReportar(
-                            'VOY_A_SALIR',
-                          )
-                      : null,
+                ],
+              ),
+              if (!espacio.visionEnLinea && espacio.camaraId == 'CAM-001') ...[
+                const SizedBox(height: EstacionaYaTokens.space8),
+                Row(
+                  children: [
+                    const Icon(Icons.wifi_off_rounded,
+                        size: 15, color: EstacionaYaTokens.offline),
+                    const SizedBox(width: EstacionaYaTokens.space4),
+                    Expanded(
+                      child: Text(
+                        'Cámara sin conexión; estado no actualizado.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                  ],
                 ),
               ],
-            ),
-          ],
+              if (espacio.tipoVehiculo != 'MIXTO' ||
+                  espacio.vehiculoDetectado != null) ...[
+                const SizedBox(height: EstacionaYaTokens.space8),
+                Text(
+                  espacio.vehiculoDetectado != null
+                      ? 'Detectado: ${_nombreVehiculo(espacio.vehiculoDetectado!)}'
+                      : 'Admite: ${_nombreVehiculo(espacio.tipoVehiculo)}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+              if (espacio.estado == 'RESERVADO') ...[
+                const SizedBox(height: EstacionaYaTokens.space8),
+                Row(
+                  children: [
+                    const Icon(Icons.timer_outlined,
+                        size: 16, color: EstacionaYaTokens.reserved),
+                    const SizedBox(width: EstacionaYaTokens.space4),
+                    Expanded(
+                      child: _ReservaCuentaRegresiva(
+                        expiracion: espacio.expiracionReserva,
+                      ),
+                    ),
+                    if (onCancelarReserva != null)
+                      TextButton.icon(
+                        onPressed: onCancelarReserva,
+                        icon: const Icon(Icons.close_rounded, size: 18),
+                        label: const Text('Liberar espacio'),
+                      ),
+                  ],
+                ),
+              ],
+              const SizedBox(height: EstacionaYaTokens.space12),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  onPressed: puedeNavegar ? onNavegar : null,
+                  icon: const Icon(Icons.directions_rounded),
+                  label: const Text('Navegar'),
+                ),
+              ),
+              if (espacio.estado == 'LIBRE' && espacio.visionEnLinea) ...[
+                const SizedBox(height: EstacionaYaTokens.space8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: onReservar,
+                    icon: const Icon(Icons.bookmark_add_outlined),
+                    label: const Text('Reservar por 5 min'),
+                  ),
+                ),
+              ],
+              if (puedeAdministrar) ...[
+                const SizedBox(height: EstacionaYaTokens.space8),
+                Wrap(
+                  spacing: EstacionaYaTokens.space8,
+                  runSpacing: EstacionaYaTokens.space4,
+                  children: [
+                    TextButton.icon(
+                      onPressed: onVerHistorial,
+                      icon: const Icon(Icons.history_rounded),
+                      label: const Text('Historial'),
+                    ),
+                    TextButton.icon(
+                      onPressed: onForzar,
+                      icon: const Icon(Icons.admin_panel_settings_rounded),
+                      label: const Text('Forzar estado'),
+                    ),
+                  ],
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );
@@ -123,46 +193,160 @@ class EspacioCard extends StatelessWidget {
   ) {
     switch (estado) {
       case 'LIBRE':
-        return _EstadoVisual(
+        return const _EstadoVisual(
           texto: 'Libre',
-          colorFondo: Colors.green.shade100,
-          colorTexto: Colors.green.shade800,
-          icono: Icons.check_circle,
+          colorFondo: Color(0xFFE8F5E9),
+          colorTexto: EstacionaYaTokens.available,
+          icono: Icons.check_circle_rounded,
         );
 
       case 'OCUPADO':
-        return _EstadoVisual(
+        return const _EstadoVisual(
           texto: 'Ocupado',
-          colorFondo: Colors.red.shade100,
-          colorTexto: Colors.red.shade800,
-          icono: Icons.cancel,
+          colorFondo: Color(0xFFFEE4E2),
+          colorTexto: EstacionaYaTokens.occupied,
+          icono: Icons.directions_car_filled_rounded,
         );
 
       case 'RESERVADO':
-        return _EstadoVisual(
+        return const _EstadoVisual(
           texto: 'Reservado',
-          colorFondo: Colors.amber.shade100,
-          colorTexto: Colors.amber.shade900,
-          icono: Icons.schedule,
+          colorFondo: Color(0xFFFFF1D6),
+          colorTexto: EstacionaYaTokens.reserved,
+          icono: Icons.schedule_rounded,
         );
 
       case 'SIN_SERVICIO':
-        return _EstadoVisual(
+        return const _EstadoVisual(
           texto: 'Sin servicio',
-          colorFondo: Colors.grey.shade300,
-          colorTexto: Colors.grey.shade800,
-          icono: Icons.warning_amber,
+          colorFondo: Color(0xFFE2E8F0),
+          colorTexto: EstacionaYaTokens.offline,
+          icono: Icons.wifi_off_rounded,
         );
 
       default:
-        return _EstadoVisual(
+        return const _EstadoVisual(
           texto: 'Desconocido',
-          colorFondo: Colors.grey.shade300,
-          colorTexto: Colors.grey.shade800,
-          icono: Icons.help_outline,
+          colorFondo: Color(0xFFE2E8F0),
+          colorTexto: EstacionaYaTokens.offline,
+          icono: Icons.help_outline_rounded,
         );
     }
   }
+
+  String _nombreVehiculo(String tipo) {
+    switch (tipo) {
+      case 'MOTO':
+        return 'Moto';
+      case 'AUTO':
+        return 'Auto';
+      case 'CAMIONETA':
+        return 'Camioneta';
+      default:
+        return 'Todo tipo';
+    }
+  }
+}
+
+class _ReservaCuentaRegresiva extends StatefulWidget {
+  final DateTime? expiracion;
+
+  const _ReservaCuentaRegresiva({required this.expiracion});
+
+  @override
+  State<_ReservaCuentaRegresiva> createState() =>
+      _ReservaCuentaRegresivaState();
+}
+
+class _ReservaCuentaRegresivaState extends State<_ReservaCuentaRegresiva> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _iniciarTimer();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ReservaCuentaRegresiva oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.expiracion != widget.expiracion) _iniciarTimer();
+  }
+
+  void _iniciarTimer() {
+    _timer?.cancel();
+    if (widget.expiracion == null) return;
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() {});
+      if (widget.expiracion!.difference(DateTime.now()).inSeconds <= 0) {
+        _timer?.cancel();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final expiracion = widget.expiracion;
+    if (expiracion == null) {
+      return const Text('Reserva activa');
+    }
+    final segundos =
+        expiracion.difference(DateTime.now()).inSeconds.clamp(0, 299);
+    final minutos = (segundos ~/ 60).toString().padLeft(2, '0');
+    final restantes = (segundos % 60).toString().padLeft(2, '0');
+    return Text(
+      'Reserva vence en $minutos:$restantes',
+      style: const TextStyle(
+        color: EstacionaYaTokens.reserved,
+        fontWeight: FontWeight.w700,
+      ),
+    );
+  }
+}
+
+class _EstadoBadge extends StatelessWidget {
+  final String texto;
+  final Color color;
+  final Color fondo;
+  final IconData icono;
+
+  const _EstadoBadge({
+    required this.texto,
+    required this.color,
+    required this.fondo,
+    required this.icono,
+  });
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: fondo,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icono, size: 15, color: color),
+            const SizedBox(width: 5),
+            Text(
+              texto,
+              style: TextStyle(
+                color: color,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+        ),
+      );
 }
 
 class _EstadoVisual {
