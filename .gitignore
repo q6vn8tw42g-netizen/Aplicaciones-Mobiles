@@ -25,3 +25,9 @@ api/.env
 iniciar_vision.bat
 ezviz_env/
 ezviz_camaras.json
+# Entornos virtuales, modelos y secretos recientes
+api/.venv312/
+api/.venv/
+vision_module/.env
+vision_module/.venv/
+vision_module/*.pt

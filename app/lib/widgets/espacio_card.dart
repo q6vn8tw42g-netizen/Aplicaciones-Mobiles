@@ -42,9 +42,11 @@ class EspacioCard extends StatelessWidget {
         onNavegar != null;
 
     return Card(
+      elevation: 2,
+      shadowColor: const Color(0x160F172A),
       clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(EstacionaYaTokens.radius20),
+        borderRadius: BorderRadius.circular(16),
         side: BorderSide(
           color: seleccionado
               ? EstacionaYaTokens.primary
@@ -67,7 +69,7 @@ class EspacioCard extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          espacio.nombre,
+                          _nombreVisual(espacio.nombre),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.titleMedium,
@@ -245,6 +247,15 @@ class EspacioCard extends StatelessWidget {
       default:
         return 'Todo tipo';
     }
+  }
+
+  String _nombreVisual(String nombre) {
+    final nombreLimpio = nombre.trim();
+    if (nombreLimpio.toUpperCase().startsWith('UPEC - ')) {
+      return nombreLimpio.substring(7).trim();
+    }
+    return nombreLimpio.replaceFirst(
+        RegExp(r'^UPEC-00', caseSensitive: false), '');
   }
 }
 

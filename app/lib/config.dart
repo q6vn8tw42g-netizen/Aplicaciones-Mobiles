@@ -2,7 +2,7 @@ class AppConfig {
   // Apunta al backend local usando la IP de tu computadora
   static const apiBaseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'http://192.168.0.115:8000',
+    defaultValue: 'http://172.20.247.42:8000',
   );
 
   static const supabaseUrl = String.fromEnvironment(

@@ -323,6 +323,7 @@ class _HomeScreenState extends State<HomeScreen> {
           minChildSize: .19,
           maxChildSize: .88,
           snap: true,
+          snapAnimationDuration: const Duration(milliseconds: 420),
           builder: (context, scroll) => _panel(provider, espacios, scroll: scroll),
         ),
       ]);
@@ -376,7 +377,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return Container(
       decoration: BoxDecoration(
         color: EstacionaYaTokens.surface,
-        borderRadius: web ? null : const BorderRadius.vertical(top: Radius.circular(24)),
+        borderRadius: web ? null : const BorderRadius.vertical(top: Radius.circular(16)),
         boxShadow: const [BoxShadow(color: Color(0x200F172A), blurRadius: 18)],
       ),
       child: ListView(
@@ -596,7 +597,9 @@ class _HomeScreenState extends State<HomeScreen> {
             style: Theme.of(context).textTheme.headlineSmall),
         const SizedBox(height: 16),
         if (_tab == 1) ...[
-          Card(child: ListTile(leading: const Icon(Icons.person_outline),
+          Card(elevation: 2, shadowColor: const Color(0x1A0F172A),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              child: ListTile(leading: const Icon(Icons.person_outline),
               title: Text(session?.user.email ?? 'Modo visitante'),
               subtitle: const Text('EstacionaYa · Carchi'))),
         ] else ...[
