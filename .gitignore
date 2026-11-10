@@ -20,3 +20,8 @@ app/ios/.symlinks/
 app/.idea/
 app/*.iml
 vision/*.pt
+.env
+api/.env
+iniciar_vision.bat
+ezviz_env/
+ezviz_camaras.json

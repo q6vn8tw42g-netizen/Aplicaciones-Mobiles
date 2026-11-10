@@ -5,16 +5,30 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as ll;
 
 import '../models/espacio.dart';
+import '../data/tramos_geometria.dart';
 import '../theme/estacionaya_theme.dart';
 
 class MapaEspacios extends StatefulWidget {
   final List<Espacio> espacios;
+  final ll.LatLng? centroInicial;
+  final List<TramoGeo> tramosAzules;
+  final ValueChanged<TramoGeo>? onTramoSeleccionado;
+  /// Cuando se cartografía un tramo, los toques añaden vértices.
+  final bool modoDibujo;
+  final List<ll.LatLng> puntosBorrador;
+  final ValueChanged<ll.LatLng>? onPuntoDibujo;
   final String? espacioSeleccionadoId;
   final ValueChanged<Espacio>? onEspacioSeleccionado;
 
   const MapaEspacios({
     super.key,
     required this.espacios,
+    this.centroInicial,
+    this.tramosAzules = const [],
+    this.onTramoSeleccionado,
+    this.modoDibujo = false,
+    this.puntosBorrador = const [],
+    this.onPuntoDibujo,
     this.espacioSeleccionadoId,
     this.onEspacioSeleccionado,
   });
@@ -24,7 +38,7 @@ class MapaEspacios extends StatefulWidget {
 }
 
 class _MapaEspaciosState extends State<MapaEspacios> {
-  // Punto central del campus UPEC en Tulcán (referencia cartográfica pública).
+  // Punto central del campus UPEC en TulcÃ¡n (referencia cartogrÃ¡fica pÃºblica).
   static const _centroUpec = ll.LatLng(0.80525, -77.73434);
   static const _calculadorDistancia = ll.Distance();
 
@@ -47,17 +61,46 @@ class _MapaEspaciosState extends State<MapaEspacios> {
     return FlutterMap(
       mapController: _controller,
       options: MapOptions(
-        initialCenter: _centroUpec,
+        initialCenter: widget.centroInicial ?? _centroUpec,
         initialZoom: 17,
         maxZoom: 18,
         onMapEvent: _alCambiarCamara,
+        onTap: (tapPosition, point) {
+          if (widget.modoDibujo) widget.onPuntoDibujo?.call(point);
+        },
       ),
       children: [
         TileLayer(
           urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
           userAgentPackageName: 'com.example.estacionaya',
         ),
-        MarkerLayer(markers: grupos.map(_construirMarcador).toList()),
+        if (widget.tramosAzules.isNotEmpty)
+          PolylineLayer(
+            polylines: [
+              for (final tramo in widget.tramosAzules)
+                if (tramo.puntos.length >= 2)
+                  Polyline(
+                    points: tramo.puntos,
+                    color: EstacionaYaTokens.primary,
+                    strokeWidth: 7,
+                  ),
+            ],
+          ),
+        if (widget.puntosBorrador.length >= 2)
+          PolylineLayer(polylines: [Polyline(
+            points: widget.puntosBorrador,
+            color: Colors.orange,
+            strokeWidth: 7,
+          )]),
+        MarkerLayer(markers: [
+          ...grupos.map(_construirMarcador),
+          for (final tramo in widget.tramosAzules)
+            if (tramo.puntos.length >= 2) _marcadorTramo(tramo),
+          ...widget.puntosBorrador.map((p) => Marker(
+            point: p, width: 22, height: 22,
+            child: const Icon(Icons.circle, size: 18, color: Colors.orange),
+          )),
+        ]),
         RichAttributionWidget(
           attributions: [
             TextSourceAttribution('OpenStreetMap', onTap: () {}),
@@ -65,6 +108,32 @@ class _MapaEspaciosState extends State<MapaEspacios> {
           showFlutterMapAttribution: false,
         ),
       ],
+    );
+  }
+
+  Marker _marcadorTramo(TramoGeo tramo) {
+    // El punto está sobre la geometría validada por quien la cartografió.
+    final centro = tramo.puntos[tramo.puntos.length ~/ 2];
+    return Marker(
+      point: centro,
+      width: 36,
+      height: 40,
+      child: Tooltip(
+        message: '${tramo.calle} · zona azul documentada',
+        child: InkWell(
+          onTap: widget.modoDibujo ? null : () => widget.onTramoSeleccionado?.call(tramo),
+          child: Container(
+            decoration: BoxDecoration(
+              color: EstacionaYaTokens.primary,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 2),
+              boxShadow: const [BoxShadow(color: Color(0x40000000), blurRadius: 5)],
+            ),
+            alignment: Alignment.center,
+            child: const Icon(Icons.local_parking_rounded, color: Colors.white, size: 22),
+          ),
+        ),
+      ),
     );
   }
 
@@ -116,7 +185,7 @@ class _MapaEspaciosState extends State<MapaEspacios> {
         height: 44,
         alignment: Alignment.bottomCenter,
         child: Tooltip(
-          message: '${espacio.nombre} · ${_nombreEstado(estado)}',
+          message: '${espacio.nombre} Â· ${_nombreEstado(estado)}',
           child: InkResponse(
             radius: 24,
             onTap: () => widget.onEspacioSeleccionado?.call(espacio),
@@ -171,14 +240,9 @@ class _MapaEspaciosState extends State<MapaEspacios> {
     final libres = grupo.espacios
         .where((e) => e.visionEnLinea && e.estado == 'LIBRE')
         .length;
-    final reservados = grupo.espacios
-        .where((e) => e.visionEnLinea && e.estado == 'RESERVADO')
-        .length;
     final color = libres > 0
         ? EstacionaYaTokens.available
-        : reservados > 0
-            ? EstacionaYaTokens.reserved
-            : EstacionaYaTokens.occupied;
+        : EstacionaYaTokens.occupied;
 
     return Marker(
       point: centro,
@@ -229,8 +293,6 @@ class _MapaEspaciosState extends State<MapaEspacios> {
         return EstacionaYaTokens.available;
       case 'OCUPADO':
         return EstacionaYaTokens.occupied;
-      case 'RESERVADO':
-        return EstacionaYaTokens.reserved;
       default:
         return EstacionaYaTokens.offline;
     }
@@ -242,8 +304,6 @@ class _MapaEspaciosState extends State<MapaEspacios> {
         return 'LIBRE';
       case 'OCUPADO':
         return 'OCUPADO';
-      case 'RESERVADO':
-        return 'RESERVADO';
       default:
         return 'SIN SERVICIO';
     }

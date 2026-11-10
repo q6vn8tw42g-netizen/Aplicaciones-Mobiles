@@ -1,771 +1,628 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart' as ll;
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../data/tramos_geometria.dart';
+import '../data/zonas_azules_oficiales.dart';
+import '../services/tramos_locales_service.dart';
 import '../models/espacio.dart';
 import '../providers/espacios_provider.dart';
 import '../services/navigation_service.dart';
-import '../services/api_service.dart';
 import '../theme/estacionaya_theme.dart';
-import '../widgets/espacio_card.dart';
 import '../widgets/mapa_espacios.dart';
 import 'login_screen.dart';
 
+/// Inicio urbano sin reservas. El catálogo documental y la disponibilidad real
+/// se muestran por separado para no confundir tramos con plazas libres.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
-
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
+enum _Ciudad { tulcan, montufar }
+enum _Vista { catalogo, monitoreados }
+
 class _HomeScreenState extends State<HomeScreen> {
-  String? _espacioSeleccionadoId;
-  int _tabIndex = 0;
+  static const _tulcan = ll.LatLng(0.80525, -77.73434);
+  static const _montufar = ll.LatLng(0.59354, -77.83066);
+  static const _dist = ll.Distance();
+  static const _radioMetros = 12000.0;
+
+  final _buscar = TextEditingController();
+  _Ciudad _ciudad = _Ciudad.tulcan;
+  _Vista _vista = _Vista.catalogo;
+  ll.LatLng? _ubicacion;
+  bool _buscandoUbicacion = false;
+  String _consulta = '';
+  int _tab = 0;
+  String? _seleccionado;
+  bool _soloCercanos = false;
+  List<TramoGeo> _tramosLocales = [];
+  TramoZonaAzul? _tramoDibujando;
+  List<ll.LatLng> _borrador = [];
+  // Solo disponible en compilaciones de desarrollo. No es un editor público.
+  bool get _puedeCartografiar => kDebugMode;
+
+  bool get _esMontufar => _ciudad == _Ciudad.montufar;
+  String get _nombreCiudad => _esMontufar ? 'Montúfar' : 'Tulcán';
+  ll.LatLng get _centro => _esMontufar ? _montufar : _tulcan;
+  List<TramoZonaAzul> get _catalogo => _esMontufar
+      ? CatalogoZonasAzules.montufar
+      : CatalogoZonasAzules.tulcan;
+  List<TramoGeo> get _geometrias => [
+    ...GeometriasZonaAzul.tramos,
+    ..._tramosLocales,
+  ].where((t) => t.localidad == _nombreCiudad && t.puntos.length >= 2).toList();
+
+  String _idTramo(TramoZonaAzul t) =>
+      '${t.localidad}|${t.calle}|${t.desde}|${t.hasta}';
+
+  TramoGeo? _geoDe(TramoZonaAzul t) {
+    final id = _idTramo(t);
+    for (final geo in _geometrias) {
+      if (geo.id == id) return geo;
+    }
+    return null;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _cargarTramosLocales();
+  }
+
+  Future<void> _cargarTramosLocales() async {
+    final datos = await TramosLocalesService.cargar();
+    if (mounted) setState(() => _tramosLocales = datos);
+  }
+
+  void _iniciarDibujo(TramoZonaAzul tramo) {
+    Navigator.of(context).pop();
+    setState(() {
+      _tramoDibujando = tramo;
+      _borrador = [];
+    });
+    _aviso('Toca la calle en el mapa desde ${tramo.desde} hasta ${tramo.hasta}. Usa varios puntos si gira.');
+  }
+
+  void _agregarPunto(ll.LatLng punto) {
+    if (_tramoDibujando == null) return;
+    setState(() => _borrador = [..._borrador, punto]);
+  }
+
+  Future<void> _guardarDibujo() async {
+    final tramo = _tramoDibujando;
+    if (tramo == null || _borrador.length < 2) {
+      _aviso('Marca al menos dos puntos del tramo.');
+      return;
+    }
+    final geo = TramoGeo(id: _idTramo(tramo), localidad: _nombreCiudad,
+        calle: tramo.calle, puntos: List.of(_borrador));
+    final datos = _tramosLocales.where((t) => t.id != geo.id).toList()..add(geo);
+    await TramosLocalesService.guardar(datos);
+    if (!mounted) return;
+    setState(() {
+      _tramosLocales = datos;
+      _tramoDibujando = null;
+      _borrador = [];
+    });
+    _aviso('Tramo marcado en azul y guardado en este dispositivo. Exporta para compartirlo con otros usuarios.');
+  }
+
+  Future<void> _exportarTramos() async {
+    if (_tramosLocales.isEmpty) {
+      _aviso('Todavía no has dibujado ningún tramo.');
+      return;
+    }
+    await Clipboard.setData(ClipboardData(
+      text: TramosLocalesService.exportarDart(_tramosLocales),
+    ));
+    if (mounted) _aviso('Geometrías copiadas al portapapeles. Pégalas en tramos_geometria.dart tras revisarlas.');
+  }
+
+
+  @override
+  void dispose() {
+    _buscar.dispose();
+    super.dispose();
+  }
+
+  void _cambiarCiudad(_Ciudad ciudad) {
+    if (ciudad == _ciudad) return;
+    setState(() {
+      _ciudad = ciudad;
+      _seleccionado = null;
+      _tramoDibujando = null;
+      _borrador = [];
+      _soloCercanos = false;
+      _consulta = '';
+      _buscar.clear();
+    });
+  }
+
+  List<Espacio> _espacios(List<Espacio> registros) {
+    final filtrados = registros.where((e) {
+      if (e.latitud == null || e.longitud == null) return false;
+      final punto = ll.LatLng(e.latitud!, e.longitud!);
+      if (_dist.as(ll.LengthUnit.Meter, _centro, punto) > _radioMetros) {
+        return false;
+      }
+      if (_soloCercanos && _ubicacion != null &&
+          _dist.as(ll.LengthUnit.Meter, _ubicacion!, punto) > 2000) {
+        return false;
+      }
+      final texto = '${e.nombre} ${e.camaraId}'.toLowerCase();
+      return texto.contains(_consulta.toLowerCase().trim());
+    }).toList();
+    if (_ubicacion != null) {
+      filtrados.sort((a, b) {
+        final da = _dist.as(ll.LengthUnit.Meter, _ubicacion!,
+            ll.LatLng(a.latitud!, a.longitud!));
+        final db = _dist.as(ll.LengthUnit.Meter, _ubicacion!,
+            ll.LatLng(b.latitud!, b.longitud!));
+        return da.compareTo(db);
+      });
+    }
+    return filtrados;
+  }
+
+  List<TramoZonaAzul> get _tramosFiltrados {
+    final q = _consulta.toLowerCase().trim();
+    return _catalogo.where((t) =>
+      '${t.calle} ${t.desde} ${t.hasta}'.toLowerCase().contains(q)).toList();
+  }
+
+  Future<void> _localizar() async {
+    if (_buscandoUbicacion) return;
+    setState(() => _buscandoUbicacion = true);
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        throw Exception('Activa la ubicación del dispositivo.');
+      }
+      var permiso = await Geolocator.checkPermission();
+      if (permiso == LocationPermission.denied) {
+        permiso = await Geolocator.requestPermission();
+      }
+      if (permiso == LocationPermission.denied ||
+          permiso == LocationPermission.deniedForever) {
+        throw Exception('No se concedió acceso a la ubicación.');
+      }
+      final pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.medium,
+      );
+      if (mounted) {
+        setState(() {
+          _ubicacion = ll.LatLng(pos.latitude, pos.longitude);
+          _soloCercanos = true;
+          _vista = _Vista.monitoreados;
+        });
+        _aviso('Se muestran espacios monitoreados a menos de 2 km.');
+      }
+    } catch (e) {
+      if (mounted) _aviso('$e');
+    } finally {
+      if (mounted) setState(() => _buscandoUbicacion = false);
+    }
+  }
+
+  void _aviso(String mensaje) => ScaffoldMessenger.of(context)
+      .showSnackBar(SnackBar(content: Text(mensaje)));
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _tabIndex == 0
-          ? Consumer<EspaciosProvider>(
-              builder: (context, provider, child) {
-                final espacios = _ordenarEspacios(provider.espaciosVisibles);
-                return Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    MapaEspacios(
-                      espacios: espacios,
-                      espacioSeleccionadoId: _espacioSeleccionadoId,
-                      onEspacioSeleccionado: (espacio) =>
-                          _seleccionarEspacio(context, espacio),
-                    ),
-                    Positioned(
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      child: SafeArea(
-                        bottom: false,
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-                          child: _HeaderFlotante(
-                            provider: provider,
-                            onSesion: () => _gestionarSesion(context, provider),
-                          ),
-                        ),
-                      ),
-                    ),
-                    DraggableScrollableSheet(
-                      initialChildSize: 0.36,
-                      minChildSize: 0.23,
-                      maxChildSize: 0.84,
-                      snap: true,
-                      snapSizes: const [0.36, 0.84],
-                      builder: (context, scrollController) {
-                        final cantidad = espacios.length;
-                        final mostrarEstado =
-                            provider.error != null || espacios.isEmpty;
-                        return Container(
-                          decoration: const BoxDecoration(
-                            color: EstacionaYaTokens.surface,
-                            borderRadius: BorderRadius.vertical(
-                              top: Radius.circular(EstacionaYaTokens.radius24),
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Color(0x260F172A),
-                                blurRadius: 24,
-                                offset: Offset(0, -5),
-                              ),
-                            ],
-                          ),
-                          child: ClipRRect(
-                            borderRadius: const BorderRadius.vertical(
-                              top: Radius.circular(EstacionaYaTokens.radius24),
-                            ),
-                            child: ListView.builder(
-                              controller: scrollController,
-                              padding: EdgeInsets.fromLTRB(
-                                16,
-                                0,
-                                16,
-                                MediaQuery.paddingOf(context).bottom + 16,
-                              ),
-                              itemCount: cantidad + 2 + (mostrarEstado ? 1 : 0),
-                              itemBuilder: (context, index) {
-                                if (index == 0) {
-                                  return _EncabezadoPanel(
-                                    cantidad: cantidad,
-                                    cargando: provider.cargando,
-                                    error: provider.error != null,
-                                  );
-                                }
-                                if (index == 1) {
-                                  return _FiltrosVehiculo(
-                                    seleccionado: provider.filtroVehiculo,
-                                    onSeleccionar:
-                                        provider.seleccionarFiltroVehiculo,
-                                  );
-                                }
-                                if (mostrarEstado && index == 2) {
-                                  return _EstadoLista(
-                                    cargando: provider.cargando,
-                                    conError: provider.error != null,
-                                  );
-                                }
-                                final indiceEspacio =
-                                    index - 2 - (mostrarEstado ? 1 : 0);
-                                final espacio = espacios[indiceEspacio];
-                                final puedeCancelar = provider.reservasPropias
-                                        .contains(espacio.id) ||
-                                    provider.rol?.toLowerCase() == 'admin';
-                                return Padding(
-                                  padding: const EdgeInsets.only(bottom: 10),
-                                  child: EspacioCard(
-                                    espacio: espacio,
-                                    seleccionado:
-                                        espacio.id == _espacioSeleccionadoId,
-                                    onSeleccionar: () =>
-                                        _seleccionarEspacio(context, espacio),
-                                    puedeAdministrar: provider.rol
-                                                ?.toLowerCase() ==
-                                            'validador' ||
-                                        provider.rol?.toLowerCase() == 'admin',
-                                    onVerHistorial: () =>
-                                        _verHistorial(context, espacio),
-                                    onForzar: () =>
-                                        _forzarEstado(context, espacio),
-                                    onNavegar: () => _mostrarOpcionesNavegacion(
-                                        context, espacio),
-                                    onReservar: () =>
-                                        _reservar(context, provider, espacio),
-                                    onCancelarReserva: puedeCancelar
-                                        ? () => _cancelarReserva(
-                                            context, provider, espacio)
-                                        : null,
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ],
-                );
-              },
-            )
-          : _buildSecondaryTab(context),
+      body: _tab == 0 ? _mapaPrincipal() : _paginaSecundaria(),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _tabIndex,
-        onDestinationSelected: (index) => setState(() => _tabIndex = index),
+        selectedIndex: _tab,
+        onDestinationSelected: (i) => setState(() => _tab = i),
         destinations: const [
-          NavigationDestination(
-              icon: Icon(Icons.map_outlined),
-              selectedIcon: Icon(Icons.map_rounded),
-              label: 'Mapa'),
-          NavigationDestination(
-              icon: Icon(Icons.person_outline_rounded),
-              selectedIcon: Icon(Icons.person_rounded),
-              label: 'Mi Perfil'),
-          NavigationDestination(
-              icon: Icon(Icons.settings_outlined),
-              selectedIcon: Icon(Icons.settings_rounded),
-              label: 'Ajustes'),
+          NavigationDestination(icon: Icon(Icons.map_outlined),
+              selectedIcon: Icon(Icons.map), label: 'Zonas'),
+          NavigationDestination(icon: Icon(Icons.person_outline),
+              selectedIcon: Icon(Icons.person), label: 'Perfil'),
+          NavigationDestination(icon: Icon(Icons.settings_outlined),
+              selectedIcon: Icon(Icons.settings), label: 'Ajustes'),
         ],
       ),
     );
   }
 
-  Widget _buildSecondaryTab(BuildContext context) => Consumer<EspaciosProvider>(
-        builder: (context, provider, _) {
-          final session = Supabase.instance.client.auth.currentSession;
-          if (_tabIndex == 1) {
-            return SafeArea(
-              child: Center(
-                child: Card(
-                  margin: const EdgeInsets.all(24),
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(mainAxisSize: MainAxisSize.min, children: [
-                      const CircleAvatar(
-                          radius: 32, child: Icon(Icons.person, size: 32)),
-                      const SizedBox(height: 12),
-                      Text(session?.user.email ?? 'Modo visitante',
-                          style: Theme.of(context).textTheme.titleMedium),
-                      const SizedBox(height: 4),
-                      Text(provider.rol ?? 'Estudiante / visitante',
-                          style: Theme.of(context).textTheme.bodyMedium),
-                      const SizedBox(height: 16),
-                      Text(
-                          'Espacios libres en línea: ${provider.espacios.where((e) => e.visionEnLinea && e.estado == 'LIBRE').length}'),
-                    ]),
-                  ),
+  Widget _mapaPrincipal() => Consumer<EspaciosProvider>(
+    builder: (context, provider, _) {
+      final espacios = _espacios(provider.espaciosVisibles);
+      final ancho = MediaQuery.sizeOf(context).width;
+      final esWebAncha = ancho >= 900;
+      final mapa = Stack(children: [
+        Positioned.fill(child: MapaEspacios(
+          key: ValueKey(_ciudad),
+          centroInicial: _centro,
+          espacios: espacios,
+          tramosAzules: _geometrias,
+          modoDibujo: _tramoDibujando != null,
+          puntosBorrador: _borrador,
+          onPuntoDibujo: _agregarPunto,
+          onTramoSeleccionado: (geo) {
+            for (final t in _catalogo) {
+              if (_idTramo(t) == geo.id) { _detalleTramo(t); break; }
+            }
+          },
+          espacioSeleccionadoId: _seleccionado,
+          onEspacioSeleccionado: (e) {
+            setState(() => _seleccionado = e.id);
+            _detalleEspacio(e);
+          },
+        )),
+        Positioned(
+          top: 0, left: 12, right: 12,
+          child: SafeArea(bottom: false, child: _encabezado()),
+        ),
+        Positioned(
+          right: 14, bottom: esWebAncha ? 24 : 30,
+          child: FloatingActionButton.small(
+            heroTag: 'ubicar',
+            tooltip: 'Buscar espacios monitoreados cercanos',
+            onPressed: _buscandoUbicacion ? null : _localizar,
+            child: _buscandoUbicacion
+                ? const Padding(padding: EdgeInsets.all(12),
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.my_location_rounded),
+          ),
+        ),
+        if (_tramoDibujando != null)
+          Positioned(
+            left: 12, right: 12, bottom: esWebAncha ? 25 : 80,
+            child: Card(
+              elevation: 5,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Wrap(spacing: 8, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text('Dibujando: ${_tramoDibujando!.calle} (${_borrador.length} puntos)',
+                      style: const TextStyle(fontWeight: FontWeight.w700)),
+                    FilledButton.icon(onPressed: _borrador.length >= 2 ? _guardarDibujo : null,
+                      icon: const Icon(Icons.check), label: const Text('Guardar tramo')),
+                    OutlinedButton(onPressed: () => setState(() { _tramoDibujando = null; _borrador = []; }),
+                      child: const Text('Cancelar')),
+                    TextButton(onPressed: _borrador.isEmpty ? null : () => setState(() => _borrador.removeLast()),
+                      child: const Text('Deshacer punto')),
+                  ],
                 ),
               ),
-            );
-          }
-          return SafeArea(
-            child: ListView(padding: const EdgeInsets.all(20), children: [
-              Text('Ajustes',
-                  style: Theme.of(context).textTheme.headlineMedium),
-              const SizedBox(height: 12),
-              const ListTile(
-                  leading: Icon(Icons.notifications_outlined),
-                  title: Text('Notificaciones'),
-                  subtitle: Text('Preferencias de avisos de disponibilidad')),
-              const ListTile(
-                  leading: Icon(Icons.info_outline),
-                  title: Text('Acerca de EstacionaYa'),
-                  subtitle:
-                      Text('Disponibilidad de parqueos UPEC en tiempo real')),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: () async {
-                  if (session == null) {
-                    await Navigator.of(context).push(MaterialPageRoute<void>(
-                        builder: (_) => const LoginScreen()));
-                    if (context.mounted) await provider.cargarReservasPropias();
-                  } else {
-                    await Supabase.instance.client.auth.signOut();
-                    provider.limpiarReservasPropias();
-                    if (context.mounted) setState(() {});
-                  }
-                },
-                icon: Icon(session == null ? Icons.login : Icons.logout),
-                label:
-                    Text(session == null ? 'Iniciar sesión' : 'Cerrar sesión'),
-              ),
-            ]),
-          );
-        },
-      );
-
-  List<Espacio> _ordenarEspacios(List<Espacio> espacios) {
-    final ordenados = List<Espacio>.of(espacios);
-    final seleccionado = ordenados.indexWhere(
-      (espacio) => espacio.id == _espacioSeleccionadoId,
-    );
-    if (seleccionado > 0) {
-      final espacio = ordenados.removeAt(seleccionado);
-      ordenados.insert(0, espacio);
-    }
-    return ordenados;
-  }
-
-  Future<void> _seleccionarEspacio(
-    BuildContext context,
-    Espacio espacio,
-  ) async {
-    setState(() => _espacioSeleccionadoId = espacio.id);
-    if (espacio.estado == 'LIBRE' && espacio.visionEnLinea) {
-      await _mostrarOpcionesNavegacion(context, espacio);
-    }
-  }
-
-  Future<void> _reservar(
-    BuildContext context,
-    EspaciosProvider provider,
-    Espacio espacio,
-  ) async {
-    if (Supabase.instance.client.auth.currentSession == null) {
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
-      );
-      if (!context.mounted ||
-          Supabase.instance.client.auth.currentSession == null) {
-        return;
-      }
-    }
-    try {
-      final avisoProgramado = await provider.reservar(espacio);
-      if (context.mounted) {
-        _mostrarMensaje(
-          context,
-          avisoProgramado
-              ? 'Espacio reservado por 5 minutos. Te avisaremos cuando falten 2.'
-              : 'Espacio reservado por 5 minutos. Activa las notificaciones para recibir el aviso de expiración.',
-        );
-      }
-    } catch (error) {
-      if (context.mounted) _mostrarMensaje(context, error.toString());
-    }
-  }
-
-  Future<void> _cancelarReserva(
-    BuildContext context,
-    EspaciosProvider provider,
-    Espacio espacio,
-  ) async {
-    try {
-      await provider.cancelarReserva(espacio);
-      if (context.mounted) _mostrarMensaje(context, 'Reserva cancelada.');
-    } catch (error) {
-      if (context.mounted) _mostrarMensaje(context, error.toString());
-    }
-  }
-
-  Future<void> _gestionarSesion(
-    BuildContext context,
-    EspaciosProvider provider,
-  ) async {
-    final auth = Supabase.instance.client.auth;
-    if (auth.currentSession == null) {
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
-      );
-      if (context.mounted) await provider.cargarReservasPropias();
-    } else {
-      await auth.signOut();
-      provider.limpiarReservasPropias();
-    }
-  }
-
-  Future<void> _verHistorial(BuildContext context, Espacio espacio) async {
-    try {
-      final eventos = await ApiService().obtenerHistorial(espacio.id);
-      if (!context.mounted) return;
-      await showDialog<void>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: Text('Historial · ${espacio.nombre}'),
-          content: SizedBox(
-            width: 420,
-            child: eventos.isEmpty
-                ? const Text(
-                    'Este espacio todavía no tiene cambios registrados.')
-                : ListView.builder(
-                    shrinkWrap: true,
-                    itemCount: eventos.length,
-                    itemBuilder: (context, index) {
-                      final evento = eventos[index];
-                      final anterior = evento['estado_anterior'] ?? 'INICIAL';
-                      final fecha = evento['creado_en']?.toString() ?? '';
-                      return ListTile(
-                        dense: true,
-                        title: Text('$anterior → ${evento['estado_nuevo']}'),
-                        subtitle: Text('${evento['fuente']} · $fecha'),
-                      );
-                    },
-                  ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cerrar'),
             ),
-          ],
-        ),
-      );
-    } catch (error) {
-      if (context.mounted) _mostrarMensaje(context, error.toString());
-    }
-  }
-
-  Future<void> _forzarEstado(BuildContext context, Espacio espacio) async {
-    var minutos = 30;
-    final estado = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Text('Forzar · ${espacio.nombre}'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                title: const Text('Marcar libre'),
-                leading: const Icon(Icons.check_circle, color: Colors.green),
-                onTap: () => Navigator.pop(dialogContext, 'LIBRE'),
-              ),
-              ListTile(
-                title: const Text('Marcar ocupado'),
-                leading: const Icon(Icons.cancel, color: Colors.red),
-                onTap: () => Navigator.pop(dialogContext, 'OCUPADO'),
-              ),
-              Row(
-                children: [
-                  const Expanded(child: Text('Bloqueo (minutos)')),
-                  DropdownButton<int>(
-                    value: minutos,
-                    items: const [15, 30, 60, 120]
-                        .map(
-                          (value) => DropdownMenuItem(
-                              value: value, child: Text('$value')),
-                        )
-                        .toList(),
-                    onChanged: (value) {
-                      if (value != null) setDialogState(() => minutos = value);
-                    },
-                  ),
-                ],
-              ),
-            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancelar'),
+        if (_geometrias.isEmpty && _tramoDibujando == null)
+          Positioned(
+            left: 12, bottom: esWebAncha ? 24 : 30,
+            child: DecoratedBox(
+              decoration: BoxDecoration(color: Colors.white.withValues(alpha: .93),
+                borderRadius: BorderRadius.circular(12)),
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Text('Trazados azules pendientes de georreferenciar',
+                    style: TextStyle(fontSize: 11)),
+              ),
             ),
-          ],
-        ),
-      ),
-    );
-    if (estado == null || !context.mounted) return;
-    try {
-      await ApiService().forzarEstado(
-        espacioId: espacio.id,
-        estado: estado,
-        minutosBloqueo: minutos,
-      );
-      if (context.mounted) {
-        _mostrarMensaje(context, 'Estado forzado por $minutos minutos.');
+          ),
+      ]);
+      if (esWebAncha) {
+        return Row(children: [
+          SizedBox(width: 430, child: _panel(provider, espacios, web: true)),
+          Expanded(child: mapa),
+        ]);
       }
-    } catch (error) {
-      if (context.mounted) _mostrarMensaje(context, error.toString());
-    }
-  }
-
-  void _mostrarMensaje(BuildContext context, String mensaje) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(mensaje)));
-  }
-
-  Future<void> _mostrarOpcionesNavegacion(
-    BuildContext context,
-    Espacio espacio,
-  ) async {
-    final latitud = espacio.latitud;
-    final longitud = espacio.longitud;
-
-    if (latitud == null || longitud == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Este espacio no tiene ubicación.',
-          ),
+      return Stack(children: [
+        Positioned.fill(child: mapa),
+        DraggableScrollableSheet(
+          initialChildSize: .43,
+          minChildSize: .19,
+          maxChildSize: .88,
+          snap: true,
+          builder: (context, scroll) => _panel(provider, espacios, scroll: scroll),
         ),
-      );
-      return;
-    }
+      ]);
+    },
+  );
 
-    final opcion = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      builder: (contextoModal) {
-        return SafeArea(
-          child: Wrap(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(
-                  20,
-                  8,
-                  20,
-                  12,
-                ),
-                child: Text(
-                  'Cómo llegar a ${espacio.nombre}',
-                  style: Theme.of(contextoModal).textTheme.titleMedium,
-                ),
-              ),
-              ListTile(
-                leading: const Icon(Icons.map),
-                title: const Text('Google Maps'),
-                subtitle: const Text(
-                  'Abrir la ruta en Google Maps',
-                ),
-                onTap: () {
-                  Navigator.pop(
-                    contextoModal,
-                    'google',
-                  );
-                },
-              ),
-              ListTile(
-                leading: const Icon(
-                  Icons.navigation,
-                ),
-                title: const Text('Waze'),
-                subtitle: const Text(
-                  'Abrir la ruta en Waze',
-                ),
-                onTap: () {
-                  Navigator.pop(
-                    contextoModal,
-                    'waze',
-                  );
-                },
-              ),
-            ],
-          ),
-        );
-      },
-    );
-
-    if (opcion == null) {
-      return;
-    }
-
-    try {
-      if (opcion == 'google') {
-        await NavigationService.abrirGoogleMaps(
-          latitud: latitud,
-          longitud: longitud,
-        );
-      } else if (opcion == 'waze') {
-        await NavigationService.abrirWaze(
-          latitud: latitud,
-          longitud: longitud,
-        );
-      }
-    } catch (e) {
-      if (!context.mounted) {
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(e.toString()),
-        ),
-      );
-    }
-  }
-}
-
-class _FiltrosVehiculo extends StatelessWidget {
-  final String seleccionado;
-  final ValueChanged<String> onSeleccionar;
-
-  const _FiltrosVehiculo({
-    required this.seleccionado,
-    required this.onSeleccionar,
-  });
-
-  static const _opciones = <(String, String)>[
-    ('TODOS', 'Todos'),
-    ('MOTO', 'Moto'),
-    ('AUTO', 'Auto'),
-    ('CAMIONETA', 'Camioneta'),
-  ];
-
-  @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 10),
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(
-            children: _opciones.map((opcion) {
-              final activo = seleccionado == opcion.$1;
-              return Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: ChoiceChip(
-                  label: Text(opcion.$2),
-                  selected: activo,
-                  onSelected: (_) => onSeleccionar(opcion.$1),
-                ),
-              );
-            }).toList(),
-          ),
-        ),
-      );
-}
-
-class _HeaderFlotante extends StatelessWidget {
-  final EspaciosProvider provider;
-  final VoidCallback onSesion;
-
-  const _HeaderFlotante({required this.provider, required this.onSesion});
-
-  @override
-  Widget build(BuildContext context) {
-    final disponibles = provider.espaciosVisibles
-        .where((e) => e.estado == 'LIBRE' && e.visionEnLinea)
-        .length;
-    final sesion = Supabase.instance.client.auth.currentSession;
-
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-      decoration: BoxDecoration(
-        color: const Color(0xF5FFFFFF),
-        borderRadius: BorderRadius.circular(EstacionaYaTokens.radius20),
-        border: Border.all(color: EstacionaYaTokens.outline),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x1F0F172A),
-            blurRadius: 16,
-            offset: Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
+  Widget _encabezado() => Card(
+    elevation: 3,
+    child: Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
           Container(
-            width: 42,
-            height: 42,
-            decoration: BoxDecoration(
-              color: EstacionaYaTokens.primary,
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: const Icon(
-              Icons.local_parking_rounded,
-              color: Colors.white,
-              size: 24,
-            ),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(color: EstacionaYaTokens.primary,
+                borderRadius: BorderRadius.circular(12)),
+            child: const Icon(Icons.local_parking, color: Colors.white),
           ),
           const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'EstacionaYa',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontSize: 15,
-                        letterSpacing: -0.2,
-                      ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  'Tulcán · disponibilidad en vivo',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontSize: 11,
-                      ),
-                ),
-              ],
+          const Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('EstacionaYa', style: TextStyle(fontSize: 18,
+                  fontWeight: FontWeight.w800)),
+              Text('Zonas azules · Carchi',
+                  style: TextStyle(fontSize: 12, color: EstacionaYaTokens.muted)),
+            ],
+          )),
+          IconButton(onPressed: () => setState(() => _tab = 1),
+            icon: const Icon(Icons.account_circle_outlined)),
+        ]),
+        const SizedBox(height: 10),
+        SegmentedButton<_Ciudad>(
+          showSelectedIcon: false,
+          segments: const [
+            ButtonSegment(value: _Ciudad.tulcan, label: Text('Tulcán')),
+            ButtonSegment(value: _Ciudad.montufar, label: Text('Montúfar')),
+          ],
+          selected: {_ciudad},
+          onSelectionChanged: (val) => _cambiarCiudad(val.first),
+        ),
+      ]),
+    ),
+  );
+
+  Widget _panel(EspaciosProvider provider, List<Espacio> espacios,
+      {bool web = false, ScrollController? scroll}) {
+    final catalogo = _tramosFiltrados;
+    final disponibles = espacios.where((e) =>
+        e.visionEnLinea && e.estado == 'LIBRE').length;
+    return Container(
+      decoration: BoxDecoration(
+        color: EstacionaYaTokens.surface,
+        borderRadius: web ? null : const BorderRadius.vertical(top: Radius.circular(24)),
+        boxShadow: const [BoxShadow(color: Color(0x200F172A), blurRadius: 18)],
+      ),
+      child: ListView(
+        controller: scroll,
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+        children: [
+          if (!web) Center(child: Container(width: 40, height: 4,
+            decoration: BoxDecoration(color: EstacionaYaTokens.outline,
+              borderRadius: BorderRadius.circular(6)))),
+          const SizedBox(height: 12),
+          Text('Explora $_nombreCiudad',
+              style: Theme.of(context).textTheme.headlineSmall),
+          const SizedBox(height: 4),
+          Text('${_catalogo.length} tramos de catálogo · ${espacios.length} espacios monitoreados visibles',
+              style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _buscar,
+            onChanged: (s) => setState(() => _consulta = s),
+            decoration: InputDecoration(
+              hintText: 'Buscar calle, intersección o espacio',
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: _consulta.isEmpty ? null : IconButton(
+                onPressed: () { _buscar.clear(); setState(() => _consulta = ''); },
+                icon: const Icon(Icons.close)),
+              filled: true,
+              fillColor: EstacionaYaTokens.canvas,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(15),
+                  borderSide: BorderSide.none),
             ),
           ),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
-            decoration: BoxDecoration(
-              color: const Color(0xFFE8F5E9),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Text(
-              '$disponibles libres',
-              style: const TextStyle(
-                color: EstacionaYaTokens.available,
-                fontSize: 11,
-                fontWeight: FontWeight.w800,
+          const SizedBox(height: 12),
+          SegmentedButton<_Vista>(
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment(value: _Vista.catalogo, label: Text('Zonas azules')),
+              ButtonSegment(value: _Vista.monitoreados, label: Text('En vivo')),
+            ],
+            selected: {_vista},
+            onSelectionChanged: (v) => setState(() => _vista = v.first),
+          ),
+          const SizedBox(height: 14),
+          if (_vista == _Vista.catalogo) ...[
+            if (_puedeCartografiar) ...[
+              OutlinedButton.icon(
+                onPressed: _exportarTramos,
+                icon: const Icon(Icons.copy_all_outlined),
+                label: Text('Exportar tramos dibujados (${_tramosLocales.length})'),
               ),
-            ),
-          ),
-          const SizedBox(width: 4),
-          IconButton.filledTonal(
-            tooltip: sesion == null ? 'Iniciar sesión' : 'Cerrar sesión',
-            onPressed: onSesion,
-            icon: Icon(
-                sesion == null ? Icons.person_rounded : Icons.logout_rounded),
-            style: IconButton.styleFrom(
-              minimumSize: const Size(48, 48),
-              foregroundColor: EstacionaYaTokens.primary,
-              backgroundColor: EstacionaYaTokens.primarySoft,
-            ),
-          ),
+              const SizedBox(height: 8),
+            ],
+            _nota('Catálogo histórico de calles reguladas. No indica plazas libres. Verifica la señalización vigente.'),
+            const SizedBox(height: 8),
+            if (catalogo.isEmpty)
+              const ListTile(title: Text('No se encontraron calles con ese nombre.')),
+            for (final tramo in catalogo) _tarjetaTramo(tramo),
+          ] else ...[
+            _nota(provider.error != null
+                ? 'No se pudo actualizar Supabase. Revisa la conexión.'
+                : espacios.isEmpty
+                  ? 'No hay datos de ocupación para esta consulta. No significa que las calles estén llenas.'
+                  : '$disponibles espacios confirmados libres entre ${espacios.length} registros visibles.'),
+            const SizedBox(height: 8),
+            if (_soloCercanos)
+              InputChip(
+                label: const Text('A menos de 2 km de mí'),
+                avatar: const Icon(Icons.my_location, size: 18),
+                onDeleted: () => setState(() => _soloCercanos = false),
+              ),
+            if (provider.cargando) const LinearProgressIndicator(),
+            if (espacios.isEmpty && !provider.cargando)
+              const ListTile(leading: Icon(Icons.wifi_off_outlined),
+                  title: Text('Sin espacios monitoreados disponibles')),
+            for (final e in espacios) _tarjetaEspacio(e),
+          ],
         ],
       ),
     );
   }
-}
 
-class _EncabezadoPanel extends StatelessWidget {
-  final int cantidad;
-  final bool cargando;
-  final bool error;
+  Widget _nota(String texto) => Container(
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(color: EstacionaYaTokens.primarySoft,
+      borderRadius: BorderRadius.circular(12)),
+    child: Row(children: [
+      const Icon(Icons.info_outline, color: EstacionaYaTokens.primary, size: 18),
+      const SizedBox(width: 10),
+      Expanded(child: Text(texto, style: const TextStyle(fontSize: 12))),
+    ]),
+  );
 
-  const _EncabezadoPanel({
-    required this.cantidad,
-    required this.cargando,
-    required this.error,
-  });
+  Widget _tarjetaTramo(TramoZonaAzul tramo) => Card(
+    child: ListTile(
+      leading: CircleAvatar(
+        backgroundColor: EstacionaYaTokens.primarySoft,
+        child: const Icon(Icons.route, color: EstacionaYaTokens.primary)),
+      title: Text(tramo.calle, style: const TextStyle(fontWeight: FontWeight.w700)),
+      subtitle: Text('Entre ${tramo.desde} y ${tramo.hasta}'),
+      trailing: _geoDe(tramo) != null
+        ? const Icon(Icons.check_circle, color: EstacionaYaTokens.primary)
+        : const Icon(Icons.chevron_right),
+      onTap: () => _detalleTramo(tramo),
+    ),
+  );
 
-  @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(0, 10, 0, 16),
-        child: Column(
-          children: [
-            Container(
-              width: 38,
-              height: 4,
-              decoration: BoxDecoration(
-                color: const Color(0xFFCBD5E1),
-                borderRadius: BorderRadius.circular(4),
-              ),
-            ),
-            const SizedBox(height: 18),
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Espacios cercanos',
-                        style: Theme.of(context).textTheme.headlineSmall,
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        error
-                            ? 'Conexión interrumpida · datos recientes'
-                            : '$cantidad ubicaciones · elige un espacio para ver acciones',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
-                ),
-                if (cargando)
-                  const SizedBox.square(
-                    dimension: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2.5),
-                  )
-                else if (!error)
-                  const Icon(
-                    Icons.near_me_rounded,
-                    color: EstacionaYaTokens.primary,
-                  ),
-              ],
-            ),
-          ],
+  void _detalleTramo(TramoZonaAzul tramo) => showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (ctx) => SafeArea(child: Padding(
+      padding: const EdgeInsets.fromLTRB(22, 8, 22, 28),
+      child: Column(mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Text(tramo.calle, style: Theme.of(ctx).textTheme.headlineSmall),
+        const SizedBox(height: 6),
+        Text('Entre ${tramo.desde} y ${tramo.hasta} · ${tramo.localidad}'),
+        const SizedBox(height: 18),
+        const ListTile(contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.payments_outlined),
+          title: Text('Tarifa'), subtitle: Text('Por confirmar con el municipio')),
+        const ListTile(contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.schedule_outlined),
+          title: Text('Horario'), subtitle: Text('Por confirmar con el municipio')),
+        const ListTile(contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.info_outline),
+          title: Text('Disponibilidad'), subtitle: Text('Sin monitorización individual')),
+        const SizedBox(height: 8),
+        const Text('Información referencial basada en ordenanzas anteriores. '
+          'Confirma señalización, horarios y tarifas vigentes en la vía.',
+          style: TextStyle(fontSize: 12, color: EstacionaYaTokens.muted)),
+        const SizedBox(height: 16),
+        if (_geoDe(tramo) != null)
+          const ListTile(
+            leading: Icon(Icons.location_on_outlined, color: EstacionaYaTokens.primary),
+            title: Text('Tramo dibujado en el mapa'),
+            subtitle: Text('Geometría registrada manualmente; pendiente de validación municipal'),
+          ),
+        if (_puedeCartografiar) ...[
+          OutlinedButton.icon(
+            onPressed: () => _iniciarDibujo(tramo),
+            icon: const Icon(Icons.edit_location_alt_outlined),
+            label: Text(_geoDe(tramo) == null ? 'Marcar tramo en el mapa' : 'Volver a dibujar tramo'),
+          ),
+          const SizedBox(height: 10),
+        ],
+        FilledButton.icon(
+          onPressed: () async {
+            Navigator.pop(ctx);
+            final uri = Uri.https('www.google.com', '/maps/search/',
+                {'api': '1', 'query': tramo.busqueda});
+            if (!await launchUrl(uri, mode: LaunchMode.externalApplication) && mounted) {
+              _aviso('No se pudo abrir Google Maps.');
+            }
+          },
+          icon: const Icon(Icons.map_outlined),
+          label: const Text('Buscar este tramo en Google Maps'),
         ),
-      );
-}
+      ]),
+    )),
+  );
 
-class _EstadoLista extends StatelessWidget {
-  final bool cargando;
-  final bool conError;
+  Widget _tarjetaEspacio(Espacio e) {
+    final estado = e.visionEnLinea ? e.estado : 'SIN SERVICIO';
+    final color = estado == 'LIBRE'
+        ? EstacionaYaTokens.available
+        : estado == 'OCUPADO'
+            ? EstacionaYaTokens.occupied
+            : EstacionaYaTokens.offline;
+    String? distancia;
+    if (_ubicacion != null && e.latitud != null && e.longitud != null) {
+      final metros = _dist.as(ll.LengthUnit.Meter, _ubicacion!,
+          ll.LatLng(e.latitud!, e.longitud!));
+      distancia = metros < 1000
+          ? '${metros.round()} m de ti'
+          : '${(metros / 1000).toStringAsFixed(1)} km de ti';
+    }
+    return Card(child: ListTile(
+      leading: CircleAvatar(backgroundColor: color.withValues(alpha: .12),
+          child: Icon(Icons.local_parking, color: color)),
+      title: Text(e.nombre),
+      subtitle: Text('$estado${distancia == null ? '' : ' · $distancia'}'),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => _detalleEspacio(e),
+    ));
+  }
 
-  const _EstadoLista({required this.cargando, required this.conError});
-
-  @override
-  Widget build(BuildContext context) {
-    final icono = cargando
-        ? Icons.radar_rounded
-        : conError
-            ? Icons.cloud_off_rounded
-            : Icons.local_parking_rounded;
-    final texto = cargando
-        ? 'Buscando espacios disponibles…'
-        : conError
-            ? 'No se pudo actualizar el mapa. Revisa tu conexión.'
-            : 'Aún no hay espacios en esta zona.';
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(0, 8, 0, 24),
-      child: Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: EstacionaYaTokens.canvas,
-          borderRadius: BorderRadius.circular(EstacionaYaTokens.radius16),
+  void _detalleEspacio(Espacio e) => showModalBottomSheet<void>(
+    context: context, showDragHandle: true,
+    builder: (ctx) => SafeArea(child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Text(e.nombre, style: Theme.of(ctx).textTheme.headlineSmall),
+        const SizedBox(height: 8),
+        Text('Estado: ${e.visionEnLinea ? e.estado : 'SIN CONEXIÓN'}'),
+        const SizedBox(height: 10),
+        const Text('La ocupación puede cambiar. Esta aplicación no permite reservas.'),
+        const SizedBox(height: 16),
+        FilledButton.icon(
+          onPressed: (e.latitud == null || e.longitud == null) ? null : () async {
+            Navigator.pop(ctx);
+            await NavigationService.abrirGoogleMaps(
+              latitud: e.latitud!, longitud: e.longitud!);
+          },
+          icon: const Icon(Icons.directions), label: const Text('Cómo llegar'),
         ),
-        child: Row(
-          children: [
-            Icon(icono, color: EstacionaYaTokens.primary),
-            const SizedBox(width: 12),
-            Expanded(child: Text(texto)),
-          ],
-        ),
-      ),
-    );
+      ]),
+    )),
+  );
+
+  Widget _paginaSecundaria() {
+    final session = Supabase.instance.client.auth.currentSession;
+    return SafeArea(child: Center(child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 540),
+      child: ListView(padding: const EdgeInsets.all(24), children: [
+        Text(_tab == 1 ? 'Mi perfil' : 'Ajustes',
+            style: Theme.of(context).textTheme.headlineSmall),
+        const SizedBox(height: 16),
+        if (_tab == 1) ...[
+          Card(child: ListTile(leading: const Icon(Icons.person_outline),
+              title: Text(session?.user.email ?? 'Modo visitante'),
+              subtitle: const Text('EstacionaYa · Carchi'))),
+        ] else ...[
+          const Card(child: ListTile(leading: Icon(Icons.info_outline),
+              title: Text('Acerca de EstacionaYa'),
+              subtitle: Text('Consulta de zonas azules en Tulcán y Montúfar.'))),
+          const Card(child: ListTile(leading: Icon(Icons.shield_outlined),
+              title: Text('Información responsable'),
+              subtitle: Text('No ofrece reservas. Los tramos documentados no implican disponibilidad real.'))),
+        ],
+        const SizedBox(height: 20),
+        FilledButton.icon(onPressed: _sesion,
+          icon: Icon(session == null ? Icons.login : Icons.logout),
+          label: Text(session == null ? 'Iniciar sesión' : 'Cerrar sesión')),
+      ]),
+    )));
+  }
+
+  Future<void> _sesion() async {
+    final auth = Supabase.instance.client.auth;
+    if (auth.currentSession == null) {
+      await Navigator.of(context).push(MaterialPageRoute<void>(
+        builder: (_) => const LoginScreen()));
+    } else {
+      await auth.signOut();
+    }
+    if (mounted) setState(() {});
   }
 }

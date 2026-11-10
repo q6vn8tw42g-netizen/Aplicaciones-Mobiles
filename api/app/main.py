@@ -7,7 +7,7 @@ from pathlib import Path
 import threading
 from uuid import UUID
 
-from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi import Body, Cookie, Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials
@@ -47,7 +47,6 @@ def _liberar_reservas_expiradas() -> None:
                 })
                 .eq("estado", "RESERVADO")
                 .lte("expiracion_reserva", ahora)
-                .select("id,camara_id")
                 .execute()
             )
             if resultado.data:
@@ -117,6 +116,65 @@ async def recibir_frame_vision(
         _video_frame_version += 1
         _video_condition.notify_all()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# Resumen efímero de detecciones, sin guardar imágenes ni matrículas.
+# Los registros se consultan solo con JWT administrador.
+_detection_lock = threading.Lock()
+_detection_state = {"actualizado_en": None, "yolo_activo": False, "detecciones": []}
+
+
+@app.post("/vision/detections", status_code=status.HTTP_204_NO_CONTENT)
+def recibir_detecciones_vision(
+    payload: dict = Body(...),
+    x_vision_token: str = Header(default=""),
+):
+    expected = os.getenv("VISION_STREAM_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="Detector no configurado")
+    if not hmac.compare_digest(x_vision_token, expected):
+        raise HTTPException(status_code=401, detail="Token de visión inválido")
+    items = payload.get("detecciones", [])
+    if not isinstance(items, list) or len(items) > 100:
+        raise HTTPException(status_code=400, detail="Detecciones inválidas")
+    limpio = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail="Detección inválida")
+        tipo = item.get("tipo")
+        zona = item.get("zona")
+        confianza = item.get("confianza")
+        if tipo not in ("AUTO", "MOTO", "CAMIONETA") or not isinstance(zona, str) or not 1 <= len(zona) <= 64:
+            raise HTTPException(status_code=400, detail="Clase o zona inválida")
+        if not isinstance(confianza, (int, float)) or not 0 <= confianza <= 1:
+            raise HTTPException(status_code=400, detail="Confianza inválida")
+        limpio.append({"zona": zona, "tipo": tipo, "confianza": round(float(confianza), 3)})
+    with _detection_lock:
+        _detection_state.update({
+            "actualizado_en": datetime.now(timezone.utc).isoformat(),
+            "yolo_activo": payload.get("yolo_activo") is True,
+            "detecciones": limpio,
+        })
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/admin/detecciones")
+def consultar_detecciones_admin(usuario: dict = Depends(requerir_rol("admin"))):
+    del usuario
+    with _detection_lock:
+        datos = dict(_detection_state)
+        datos["detecciones"] = list(datos["detecciones"])
+    if datos["actualizado_en"]:
+        edad = (datetime.now(timezone.utc) - datetime.fromisoformat(datos["actualizado_en"])).total_seconds()
+        if edad > 8:
+            datos["detecciones"] = []
+            datos["yolo_activo"] = False
+            datos["sin_senal"] = True
+        else:
+            datos["sin_senal"] = False
+    else:
+        datos["sin_senal"] = True
+    return datos
 
 
 @app.post("/admin/video-session")
@@ -201,7 +259,7 @@ def admin_panel():
     publishable_key = os.getenv("SUPABASE_PUBLISHABLE_KEY", "")
     if not publishable_key:
         raise HTTPException(status_code=503, detail="Falta SUPABASE_PUBLISHABLE_KEY en el backend.")
-    return html.replace("__SUPABASE_URL__", os.environ["SUPABASE_URL"]).replace(
+    return html.replace("__SUPABASE_URL__", os.getenv("SUPABASE_PUBLIC_URL") or os.environ["SUPABASE_URL"]).replace(
         "__SUPABASE_PUBLISHABLE_KEY__", publishable_key
     )
 
@@ -242,24 +300,48 @@ def actualizar_tipo_vehiculo_espacio(
     return resultado.data[0]
 
 
+
 @app.get("/admin/camaras")
-def listar_configuracion_camaras(usuario: dict = Depends(requerir_rol("admin"))):
-    """Lista espacios UPEC y sus rectángulos ROI; requiere JWT de administrador."""
+def listar_configuracion_camaras(
+    usuario: dict = Depends(requerir_rol("admin"))
+):
+    """Lista los cuatro espacios de estacionamiento y sus ROI."""
     del usuario
+
+    camera_ids = ["CAM-001", "CAM-002", "CAM-003", "CAM-004"]
+
     espacios = (
-        get_supabase_admin().table("espacios")
+        get_supabase_admin()
+        .table("espacios")
         .select("id,codigo,camara_id")
-        .like("codigo", "UPEC%")
-        .order("codigo")
+        .in_("camara_id", camera_ids)
+        .order("camara_id")
         .execute().data or []
     )
+
     configuraciones = (
-        get_supabase_admin().table("config_camaras")
-        .select("espacio_id,x,y,width,height,frame_width,frame_height,updated_at")
+        get_supabase_admin()
+        .table("config_camaras")
+        .select(
+            "espacio_id,x,y,width,height,"
+            "frame_width,frame_height,updated_at"
+        )
         .execute().data or []
     )
-    por_espacio = {str(c["espacio_id"]): c for c in configuraciones}
-    return [{**e, "roi": por_espacio.get(str(e["id"]))} for e in espacios]
+
+    por_espacio = {
+        str(config["espacio_id"]): config
+        for config in configuraciones
+    }
+
+    return [
+        {
+            **espacio,
+            "roi": por_espacio.get(str(espacio["id"]))
+        }
+        for espacio in espacios
+    ]
+
 
 
 @app.put("/admin/camaras/{espacio_id}")
@@ -268,30 +350,56 @@ def guardar_roi_camara(
     body: RoiRectIn,
     usuario: dict = Depends(requerir_rol("admin")),
 ):
-    """Crea o reemplaza el ROI rectangular para un espacio UPEC."""
+    """Crea o reemplaza el ROI de una cámara de EstacionaYa."""
     del usuario
+
     supabase = get_supabase_admin()
+
+    camera_ids = ["CAM-001", "CAM-002", "CAM-003", "CAM-004"]
+
     espacio = (
-        supabase.table("espacios").select("id,camara_id,codigo")
-        .eq("id", str(espacio_id)).like("codigo", "UPEC%")
-        .maybe_single().execute()
+        supabase.table("espacios")
+        .select("id,camara_id,codigo")
+        .eq("id", str(espacio_id))
+        .in_("camara_id", camera_ids)
+        .maybe_single()
+        .execute()
     )
+
     if not espacio.data:
-        raise HTTPException(status_code=404, detail="Espacio UPEC no encontrado.")
+        raise HTTPException(
+            status_code=404,
+            detail="Cámara no encontrada entre los espacios configurados."
+        )
+
     valores = {
         "espacio_id": str(espacio_id),
         "camara_id": espacio.data["camara_id"],
-        "x": body.x, "y": body.y,
-        "width": body.width, "height": body.height,
-        "frame_width": body.frame_width, "frame_height": body.frame_height,
+        "x": body.x,
+        "y": body.y,
+        "width": body.width,
+        "height": body.height,
+        "frame_width": body.frame_width,
+        "frame_height": body.frame_height,
     }
+
     resultado = (
-        supabase.table("config_camaras").upsert(valores, on_conflict="espacio_id")
-        .select("espacio_id,camara_id,x,y,width,height,frame_width,frame_height,updated_at")
-        .single().execute()
+        supabase.table("config_camaras")
+        .upsert(valores, on_conflict="espacio_id")
+        .select(
+            "espacio_id,camara_id,x,y,width,height,"
+            "frame_width,frame_height,updated_at"
+        )
+        .single()
+        .execute()
     )
+
     if not resultado.data:
-        raise HTTPException(status_code=502, detail="No se pudo guardar el ROI.")
+        raise HTTPException(
+            status_code=502,
+            detail="No se pudo guardar la configuración del estacionamiento."
+        )
+
     return resultado.data
 
 

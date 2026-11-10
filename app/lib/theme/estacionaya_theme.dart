@@ -4,10 +4,10 @@ import 'package:flutter/material.dart';
 abstract final class EstacionaYaTokens {
   static const ink = Color(0xFF0F172A);
   static const muted = Color(0xFF475569);
-  static const canvas = Color(0xFFF1F5F9);
+  static const canvas = Color(0xFFF4F7FC);
   static const surface = Color(0xFFFFFFFF);
-  static const primary = Color(0xFF2563EB);
-  static const primarySoft = Color(0xFFDBEAFE);
+  static const primary = Color(0xFF165DDE);
+  static const primarySoft = Color(0xFFE0EBFF);
   static const available = Color(0xFF166534);
   static const occupied = Color(0xFFB42318);
   static const reserved = Color(0xFF92400E);
@@ -63,6 +63,19 @@ abstract final class EstacionaYaTheme {
           color: EstacionaYaTokens.muted,
           fontSize: 12,
         ),
+      ),
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: EstacionaYaTokens.surface,
+        indicatorColor: EstacionaYaTokens.primarySoft,
+        labelTextStyle: WidgetStateProperty.all(
+          const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+        ),
+      ),
+      chipTheme: ChipThemeData(
+        selectedColor: EstacionaYaTokens.primarySoft,
+        backgroundColor: EstacionaYaTokens.surface,
+        side: const BorderSide(color: EstacionaYaTokens.outline),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
       cardTheme: CardThemeData(
         color: EstacionaYaTokens.surface,

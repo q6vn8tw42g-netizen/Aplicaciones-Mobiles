@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EstacionaYa · Panel UPEC</title>
+  <meta name="supabase-url" content="__SUPABASE_URL__">
+  <meta name="supabase-key" content="__SUPABASE_PUBLISHABLE_KEY__">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root { color-scheme: light; }
+    body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .hidden { display: none !important; }
+    .list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 1rem; margin-top: 1.25rem; }
+    .space { display: flex; flex-direction: column; justify-content: space-between; gap: 1.5rem; min-height: 190px; padding: 1.25rem; border: 1px solid #e2e8f0; border-radius: 1rem; background: #fff; box-shadow: 0 8px 24px rgba(15, 23, 42, .06); transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease; }
+    .space:hover { transform: translateY(-3px); border-color: #cbd5e1; box-shadow: 0 16px 32px rgba(15, 23, 42, .10); }
+    .space h2 { margin: 0; color: #0f172a; font-size: 1rem; font-weight: 750; letter-spacing: -.02em; }
+    .meta { margin-top: .35rem; color: #64748b; font-size: .8rem; }
+    .status { display: inline-flex; align-items: center; gap: .4rem; width: fit-content; margin-top: 1rem; padding: .4rem .7rem; border: 1px solid transparent; border-radius: 9999px; font-size: .7rem; font-weight: 800; letter-spacing: .06em; }
+    .status::before { width: .45rem; height: .45rem; border-radius: 9999px; background: currentColor; content: ""; }
+    .status.LIBRE { color: #047857; background: #d1fae5; border-color: #a7f3d0; }
+    .status.OCUPADO { color: #be123c; background: #ffe4e6; border-color: #fecdd3; }
+    .status.SIN_SERVICIO { color: #a16207; background: #fef3c7; border-color: #fde68a; }
+    .actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+    .actions button, #refresh, #logout, #login-button { border: 0; border-radius: .7rem; padding: .65rem .85rem; font: inherit; font-size: .8rem; font-weight: 700; cursor: pointer; transition: background-color .18s ease, color .18s ease, box-shadow .18s ease, transform .18s ease; }
+    .actions button:hover, #refresh:hover, #logout:hover, #login-button:hover { transform: translateY(-1px); }
+    .actions button:disabled, #refresh:disabled, #logout:disabled, #login-button:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+    .actions .secondary:first-child { color: #047857; background: #ecfdf5; }
+    .actions .secondary:first-child:hover { background: #d1fae5; }
+    .actions .secondary:nth-child(2) { color: #be123c; background: #fff1f2; }
+    .actions .secondary:nth-child(2):hover { background: #ffe4e6; }
+    .actions .danger { color: #92400e; background: #fffbeb; }
+    .actions .danger:hover { background: #fef3c7; }
+    #refresh, #logout { color: #334155; background: #f1f5f9; }
+    #refresh:hover, #logout:hover { background: #e2e8f0; }
+    #login-button { color: white; background: #2563eb; box-shadow: 0 4px 12px rgba(37, 99, 235, .22); }
+    #login-button:hover { background: #1d4ed8; box-shadow: 0 7px 18px rgba(37, 99, 235, .28); }
+    .notice { min-height: 1.25rem; color: #be123c; font-size: .875rem; }
+    .muted { color: #64748b; }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900 antialiased">
+  <div class="pointer-events-none fixed inset-0 overflow-hidden" aria-hidden="true">
+    <div class="absolute -right-28 -top-32 h-96 w-96 rounded-full bg-blue-100/70 blur-3xl"></div>
+    <div class="absolute -bottom-40 -left-32 h-96 w-96 rounded-full bg-sky-100/60 blur-3xl"></div>
+  </div>
+  <main class="relative mx-auto min-h-screen w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8 lg:py-10">
+    <header class="mb-10 flex items-center justify-between gap-4 border-b border-slate-200/80 pb-5">
+      <div class="flex items-center gap-3">
+        <div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-600 text-white shadow-lg shadow-blue-900/15">
+          <svg viewBox="0 0 24 24" fill="none" class="h-6 w-6" aria-hidden="true"><path d="M7 20V4h6.5a5 5 0 0 1 0 10H7m0-5h6.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div>
+          <p class="text-lg font-extrabold tracking-tight text-slate-950">EstacionaYa <span class="font-medium text-slate-400">/</span> UPEC</p>
+          <p class="text-xs font-medium text-slate-500">Administración de parqueos</p>
+        </div>
+      </div>
+      <button id="logout" class="hidden inline-flex items-center gap-2" type="button">
+        <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" aria-hidden="true"><path d="M10 17l5-5-5-5m5 5H3m9-9h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Cerrar sesión
+      </button>
+    </header>
+
+    <section id="login" class="mx-auto grid max-w-4xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xl shadow-slate-900/5 md:grid-cols-2">
+      <div class="hidden flex-col justify-between bg-gradient-to-br from-blue-700 via-blue-800 to-slate-900 p-9 text-white md:flex">
+        <div>
+          <span class="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1.5 text-xs font-semibold text-blue-50"><span class="h-2 w-2 rounded-full bg-blue-300"></span> Portal de gestión</span>
+          <h1 class="mt-8 text-3xl font-bold leading-tight tracking-tight">Tu campus,<br>más fácil de recorrer.</h1>
+          <p class="mt-4 max-w-xs text-sm leading-6 text-blue-50/80">Administra disponibilidad y mantenimiento de los espacios de parqueo de la UPEC.</p>
+        </div>
+        <p class="text-xs text-blue-100/60">EstacionaYa · Gestión universitaria</p>
+      </div>
+      <div class="p-6 sm:p-9">
+        <div class="mb-7">
+          <p class="text-xs font-bold uppercase tracking-[.18em] text-blue-700">Acceso seguro</p>
+          <h2 class="mt-2 text-2xl font-bold tracking-tight text-slate-950">Bienvenido</h2>
+          <p class="mt-2 text-sm leading-6 text-slate-500">Ingresa con tu cuenta autorizada como administrador.</p>
+        </div>
+        <form id="login-form" class="space-y-5">
+          <div>
+            <label for="email" class="mb-1.5 block text-sm font-semibold text-slate-700">Correo electrónico</label>
+            <input id="email" type="email" autocomplete="username" required placeholder="nombre@upec.edu.ec" class="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 hover:border-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10">
+          </div>
+          <div>
+            <label for="password" class="mb-1.5 block text-sm font-semibold text-slate-700">Contraseña</label>
+            <input id="password" type="password" autocomplete="current-password" required placeholder="••••••••••••" class="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 hover:border-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10">
+          </div>
+          <p id="login-error" class="notice" role="alert"></p>
+          <button id="login-button" type="submit" class="w-full">Iniciar sesión</button>
+        </form>
+      </div>
+    </section>
+
+    <section id="dashboard" class="hidden">
+      <div class="mb-7 flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
+        <div>
+          <div class="mb-3 inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-bold text-blue-800"><span class="h-2 w-2 rounded-full bg-blue-500"></span> UPEC · TULCÁN</div>
+          <h1 class="text-3xl font-extrabold tracking-tight text-slate-950 sm:text-4xl">Espacios de parqueo</h1>
+          <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-500">Consulta estados y gestiona bloqueos por mantenimiento. Los cambios manuales se protegen frente a la cámara durante 30 minutos.</p>
+        </div>
+        <button id="refresh" type="button" class="inline-flex shrink-0 items-center justify-center gap-2">
+          <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5m10-2a7 7 0 0 0-12.2-3L4 12m16 0-2.8 5a7 7 0 0 1-12.2-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Actualizar
+        </button>
+      </div>
+      <nav class="mb-6 flex flex-wrap gap-2" aria-label="Secciones de administración">
+        <button id="tab-spaces" type="button" class="rounded-xl bg-blue-700 px-4 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-blue-800">Espacios</button>
+        <button id="tab-cameras" type="button" class="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 shadow-sm transition hover:border-blue-300 hover:text-blue-800">Configurar cámaras</button>
+        <button id="tab-monitor" type="button" class="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 shadow-sm transition hover:border-blue-300 hover:text-blue-800">Monitoreo YOLO</button>
+        <button id="tab-world" type="button" class="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 shadow-sm transition hover:border-blue-300 hover:text-blue-800">🌍 Cámaras del mundo</button>
+      </nav>
+      <!-- Fuentes públicas: enlaces oficiales, no streaming capturado ni procesamiento automático. -->
+      <section id="world-panel" class="hidden space-y-5" aria-label="Galería privada de cámaras públicas del mundo">
+        <div class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
+          <div class="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p class="text-xs font-bold uppercase tracking-widest text-blue-700">Acceso desde administración</p>
+              <h2 class="mt-2 text-2xl font-extrabold text-slate-950">🌍 Cámaras del mundo</h2>
+              <p class="mt-2 max-w-3xl text-sm leading-6 text-slate-600">Consulta fuentes públicas externas para estudiar tráfico, escenas urbanas y ejemplos visuales de detección vehicular. La señal se abre en el sitio de su operador.</p>
+            </div>
+            <span class="rounded-full bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800">Modo demostración</span>
+          </div>
+          <div class="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-950">
+            <strong>Importante:</strong> estas cámaras NO están conectadas a YOLO ni actualizan estados de Tulcán o Montúfar. Para procesar vídeo necesitamos una URL de stream reutilizable y autorización del operador. La disponibilidad de cada cámara puede variar.
+          </div>
+          <div class="mt-5 flex flex-wrap items-end gap-3">
+            <label class="min-w-[220px] flex-1 text-sm font-semibold text-slate-700" for="world-search">Buscar cámara o ciudad
+              <input id="world-search" type="search" placeholder="Ej.: Nueva York, México, tráfico" class="mt-2 block w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm outline-none focus:border-blue-600" autocomplete="off" />
+            </label>
+            <label class="min-w-[180px] text-sm font-semibold text-slate-700" for="world-region">Región
+              <select id="world-region" class="mt-2 block w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm outline-none focus:border-blue-600">
+                <option value="TODOS">Todas</option><option value="America">América</option><option value="Europa">Europa</option><option value="Mundo">Mundo</option>
+              </select>
+            </label>
+          </div>
+          <div id="world-list" class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3"></div>
+          <p id="world-count" class="mt-4 text-xs text-slate-500" aria-live="polite"></p>
+        </div>
+      </section>
+      <section id="monitor-panel" class="hidden space-y-5" aria-label="Monitoreo privado de vehículos">
+        <div class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div><p class="text-xs font-bold uppercase tracking-widest text-blue-700">Solo administradores</p>
+              <h2 class="mt-1 text-2xl font-extrabold">Monitoreo YOLO</h2>
+              <p class="mt-1 text-sm text-slate-500">Vista del detector activo y detecciones por zona. Las cámaras externas de prueba no alteran zonas azules.</p></div>
+            <span id="monitor-status" class="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600" role="status">Sin verificar</span>
+          </div>
+          <div class="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div class="rounded-xl bg-blue-50 p-4"><p class="text-sm text-blue-800">Autos</p><p id="count-auto" class="text-3xl font-bold text-blue-950">—</p></div>
+            <div class="rounded-xl bg-violet-50 p-4"><p class="text-sm text-violet-800">Motos</p><p id="count-moto" class="text-3xl font-bold text-violet-950">—</p></div>
+            <div class="rounded-xl bg-amber-50 p-4"><p class="text-sm text-amber-800">Camionetas</p><p id="count-camioneta" class="text-3xl font-bold text-amber-950">—</p></div>
+            <div class="rounded-xl bg-slate-100 p-4"><p class="text-sm text-slate-700">Detecciones / ROI</p><p id="count-total" class="text-3xl font-bold text-slate-900">—</p></div>
+          </div>
+        </div>
+        <div class="grid gap-5 lg:grid-cols-[minmax(0,1.6fr)_minmax(280px,1fr)]">
+          <div class="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div class="mb-3 flex items-center justify-between"><h3 class="font-bold">Cámara en vivo</h3><span class="text-xs text-slate-500">Imagen anotada por YOLO</span></div>
+            <div class="aspect-video overflow-hidden rounded-2xl bg-slate-950"><img id="monitor-feed" alt="Transmisión privada de cámara" class="h-full w-full object-contain" src="" /></div>
+            <p id="monitor-video-message" class="mt-2 text-sm text-slate-500" role="status">Conecta el detector para visualizar vídeo.</p>
+          </div>
+          <div class="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+            <h3 class="font-bold">Filtrar detecciones</h3>
+            <label class="mt-3 block text-sm text-slate-600" for="monitor-filter">Tipo de vehículo</label>
+            <select id="monitor-filter" class="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5">
+              <option value="TODOS">Todos los vehículos</option><option value="AUTO">Autos</option><option value="MOTO">Motos</option><option value="CAMIONETA">Camionetas</option>
+            </select>
+            <p class="mt-3 text-xs text-slate-500">El filtro aplica a la lista. La transmisión muestra todos los recuadros anotados por YOLO.</p>
+            <p id="monitor-updated" class="mt-3 text-xs text-slate-500">Esperando datos...</p>
+            <ul id="monitor-results" class="mt-3 max-h-[360px] space-y-2 overflow-auto" aria-live="polite"></ul>
+          </div>
+        </div>
+        <p class="text-xs text-slate-500">Estas cifras son detecciones asociadas a zonas configuradas (ROI), no un conteo único de vehículos ni disponibilidad confirmada de zonas azules.</p>
+      </section>
+      <section id="camera-panel" class="hidden rounded-3xl border border-slate-200 bg-white p-4 shadow-lg shadow-slate-900/5 sm:p-6">
+        <div class="mb-5 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+          <div><p class="text-xs font-bold uppercase tracking-[.16em] text-blue-700">Calibración visual</p><h2 class="mt-1 text-xl font-bold text-slate-950">Delimitar un espacio</h2><p class="mt-1 text-sm text-slate-500">Arrastra sobre la imagen para dibujar el ROI del espacio seleccionado.</p></div>
+          <label class="text-sm font-semibold text-slate-600">Espacio
+            <select id="camera-space" class="mt-1 block min-w-64 rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10"><option value="">Cargando espacios…</option></select>
+          </label>
+        </div>
+        <div class="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <label class="text-sm font-semibold text-slate-600">Nombre del espacio
+            <input id="space-name" type="text" maxlength="120" placeholder="UPEC-015" class="mt-1 block w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10">
+          </label>
+          <label class="text-sm font-semibold text-slate-600">Latitud
+            <input id="space-latitude" type="number" step="any" min="-90" max="90" placeholder="0.81155" class="mt-1 block w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10">
+          </label>
+          <label class="text-sm font-semibold text-slate-600">Longitud
+            <input id="space-longitude" type="number" step="any" min="-180" max="180" placeholder="-77.7188" class="mt-1 block w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10">
+          </label>
+        </div>
+        <div class="mb-3 flex flex-wrap items-center gap-2">
+          <button id="connect-live" type="button" class="rounded-lg bg-blue-700 px-3 py-2 text-sm font-semibold text-white transition hover:bg-blue-800">Ver cámara en vivo</button>
+          <label class="cursor-pointer rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100">Cargar frame de prueba<input id="frame-file" type="file" accept="image/*" class="hidden"></label>
+          <button id="clear-roi" type="button" class="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50">Borrar recuadro</button>
+          <span id="roi-coordinates" class="text-xs font-medium text-slate-500">ROI: sin definir</span>
+        </div>
+        <div class="overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-2">
+          <div id="video-stage" class="relative mx-auto w-full max-w-[960px] overflow-hidden rounded-lg bg-slate-900" style="aspect-ratio: 4 / 3">
+            <img id="live-feed" alt="Video en vivo de la cámara de parqueo" draggable="false" class="absolute inset-0 z-0 h-full w-full object-fill">
+            <canvas id="roi-canvas" width="640" height="480" class="absolute inset-0 z-10 block h-full w-full touch-none cursor-crosshair"></canvas>
+          </div>
+        </div>
+        <div class="mt-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+          <p class="max-w-2xl text-xs leading-5 text-slate-500">Al abrir esta sección se conecta la cámara en vivo. Arrastra sobre la imagen para delimitar el espacio; también puedes cargar una imagen de prueba.</p>
+          <button id="save-roi" type="button" class="rounded-xl bg-blue-700 px-5 py-3 text-sm font-bold text-white shadow-md shadow-blue-900/15 transition hover:-translate-y-0.5 hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50">Guardar configuración</button>
+        </div>
+        <p id="roi-message" class="mt-3 text-sm font-medium text-slate-600" role="status"></p>
+      </section>
+      <section id="spaces-panel">
+      <div class="mb-4 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 shadow-sm shadow-slate-900/[.02]">
+        <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-100 text-slate-600"><svg viewBox="0 0 24 24" fill="none" class="h-5 w-5" aria-hidden="true"><path d="M5 20V4h6a5 5 0 0 1 0 10H5m0-5h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div><p class="text-sm font-bold text-slate-800">Control de disponibilidad</p><p class="text-xs text-slate-500">Los estados se actualizan desde el sistema central.</p></div>
+      </div>
+      <p id="message" class="notice px-1" role="status"></p>
+      <div id="spaces" class="list"></div>
+      </section>
+    </section>
+  </main><script>
+const base=location.origin, sbUrl=document.querySelector('meta[name="supabase-url"]').content, sbKey=document.querySelector('meta[name="supabase-key"]').content;
+let token=null;
+const $=id=>document.getElementById(id);
+function showLogin(){ $('login').classList.remove('hidden'); $('dashboard').classList.add('hidden'); $('logout').classList.add('hidden'); token=null; }
+async function login(email,password){
+  if(!sbUrl||!sbKey||sbUrl.includes('__SUPABASE_')||sbKey.includes('__SUPABASE_')) throw Error('El panel no tiene la configuración pública de Supabase. Reinicia FastAPI con SUPABASE_PUBLISHABLE_KEY de este mismo proyecto.');
+  let r;try{r=await fetch(`${sbUrl}/auth/v1/token?grant_type=password`,{method:'POST',headers:{apikey:sbKey,'Content-Type':'application/json'},body:JSON.stringify({email,password})});}catch(_){throw Error('No se pudo conectar con Supabase Auth. Revisa la conexión y SUPABASE_URL.');}
+  const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error_description||d.msg||d.message||d.error||'Supabase rechazó el inicio de sesión. Verifica correo, contraseña y que la cuenta exista en este proyecto.');if(!d.access_token)throw Error('Supabase no devolvió una sesión. Revisa la configuración del proyecto.');return d.access_token;
+}
+async function api(path,options={}){let r;try{r=await fetch(base+path,{...options,headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`,...options.headers}});}catch(_){throw Error('No se pudo conectar con FastAPI. Revisa que el servidor esté activo y usa la IP/puerto correctos.');}const d=await r.json().catch(()=>({}));if(r.status===401)throw Error(d.detail||'FastAPI no aceptó la sesión. Revisa que SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY pertenezcan al mismo proyecto.');if(r.status===403)throw Error(d.detail||'Credenciales correctas, pero el perfil no tiene rol admin.');if(!r.ok)throw Error(d.detail||'Error del servidor.');return d;}
+function render(rows){const root=$('spaces');root.replaceChildren();if(!rows.length){root.innerHTML='<p class="muted">No hay espacios cuyo código empiece por UPEC. Ejecuta el seed primero.</p>';return;}for(const s of rows){const card=document.createElement('article');card.className='space';const info=document.createElement('div');const title=document.createElement('h2');title.textContent=s.codigo;const id=document.createElement('div');id.className='meta';id.textContent=`Cámara: ${s.camara_id}`;const status=document.createElement('span');status.className=`status ${s.estado}`;status.textContent=s.estado;info.append(title,id,status);const actions=document.createElement('div');actions.className='actions';for(const [state,label,cls] of [['LIBRE','Marcar libre','secondary'],['OCUPADO','Marcar ocupado','secondary'],['SIN_SERVICIO','Bloquear mantenimiento','danger']]){const b=document.createElement('button');b.className=cls;b.textContent=label;b.disabled=state===s.estado;b.onclick=()=>change(s.id,state,s.codigo);actions.append(b);}card.append(info,actions);root.append(card);}}
+async function load(){ $('message').textContent='Cargando…';try{render(await api('/admin/espacios'));$('message').textContent='';}catch(e){$('message').textContent=e.message;if(e.message.includes('ADMIN'))showLogin();}}
+async function change(id,state,name){if(!confirm(`¿Cambiar ${name} a ${state}?`))return;$('message').textContent='Guardando…';try{await api(`/espacios/${id}/forzar-estado`,{method:'POST',body:JSON.stringify({estado:state,minutos_bloqueo:30})});await load();}catch(e){$('message').textContent=e.message;}}
+$('login-form').addEventListener('submit',async e=>{e.preventDefault();$('login-error').textContent='';$('login-button').disabled=true;try{token=await login($('email').value,$('password').value);await api('/admin/espacios');$('login').classList.add('hidden');$('dashboard').classList.remove('hidden');$('logout').classList.remove('hidden');await load();}catch(e){$('login-error').textContent=e.message;token=null;}finally{$('login-button').disabled=false;}});
+$('refresh').onclick=load;$('logout').onclick=showLogin;
+
+// Herramienta de ROI: se añade sin tocar los flujos existentes de login, JWT y estados.
+const cameraCanvas=$('roi-canvas'), cameraCtx=cameraCanvas.getContext('2d'), liveFeed=$('live-feed'), videoStage=$('video-stage');
+let cameraRows=[], cameraSpace=null, cameraRoi=null, cameraDrag=null, cameraRoiDirty=false, videoStreamActive=false, videoStreamWanted=false, localFrameUrl=null, videoRetryTimer=null;
+const sampleFrame='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480"><defs><linearGradient id="g" x2="0" y2="1"><stop stop-color="#64748b"/><stop offset="1" stop-color="#334155"/></linearGradient></defs><rect width="640" height="480" fill="url(#g)"/><path d="M0 85h640v395H0z" fill="#475569"/><path d="M0 105h640M0 455h640" stroke="#cbd5e1" stroke-width="8"/><g fill="none" stroke="#f8fafc" stroke-width="5" stroke-dasharray="20 12"><path d="M100 130v300M250 130v300M400 130v300M550 130v300"/></g><g fill="#0f172a" stroke="#94a3b8" stroke-width="3"><rect x="128" y="205" width="85" height="170" rx="22"/><rect x="428" y="150" width="85" height="170" rx="22"/></g><g fill="#e2e8f0" font-family="sans-serif" font-size="18" font-weight="700"><text x="28" y="55">FRAME DE PRUEBA · UPEC</text><text x="142" y="410">PUESTO 1</text><text x="442" y="350">PUESTO 2</text></g></svg>`);
+function paintCamera(){cameraCtx.clearRect(0,0,cameraCanvas.width,cameraCanvas.height);if(cameraRoi){cameraCtx.fillStyle='rgba(37,99,235,.18)';cameraCtx.fillRect(cameraRoi.x,cameraRoi.y,cameraRoi.width,cameraRoi.height);cameraCtx.strokeStyle='#60a5fa';cameraCtx.lineWidth=Math.max(3,cameraCanvas.width/320);cameraCtx.setLineDash([10,6]);cameraCtx.strokeRect(cameraRoi.x,cameraRoi.y,cameraRoi.width,cameraRoi.height);cameraCtx.setLineDash([]);cameraCtx.fillStyle='#1d4ed8';cameraCtx.fillRect(cameraRoi.x,cameraRoi.y,Math.min(160,cameraRoi.width),28);cameraCtx.fillStyle='#fff';cameraCtx.font='bold 15px system-ui';cameraCtx.fillText('ROI · '+(cameraSpace?.codigo||'Espacio'),cameraRoi.x+7,cameraRoi.y+19);}$('roi-coordinates').textContent=cameraRoi?`ROI: x ${cameraRoi.x}, y ${cameraRoi.y}, ${cameraRoi.width} × ${cameraRoi.height} px`:'ROI: sin definir';}
+liveFeed.onload=()=>{if(!liveFeed.naturalWidth||!liveFeed.naturalHeight)return;if(cameraCanvas.width!==liveFeed.naturalWidth||cameraCanvas.height!==liveFeed.naturalHeight){cameraCanvas.width=liveFeed.naturalWidth;cameraCanvas.height=liveFeed.naturalHeight;videoStage.style.aspectRatio=`${liveFeed.naturalWidth} / ${liveFeed.naturalHeight}`;paintCamera();}if(localFrameUrl&&liveFeed.src===localFrameUrl){URL.revokeObjectURL(localFrameUrl);localFrameUrl=null;}if(videoStreamActive)$('roi-message').textContent='Video en vivo conectado.';};
+function iniciarVideoEnVivo() {
+  if (videoRetryTimer !== null) {
+    clearTimeout(videoRetryTimer);
+    videoRetryTimer = null;
+  }
+  if (localFrameUrl) { URL.revokeObjectURL(localFrameUrl); localFrameUrl = null; }
+  videoStreamWanted = true;
+  videoStreamActive = true;
+  $('roi-message').textContent = 'Conectando con la cámara en vivo...';
+  // Misma API y cookie de administrador; evita una respuesta anterior en caché.
+  liveFeed.src = base + '/video_feed?t=' + Date.now();
+}
+function detenerVideoEnVivo() {
+  videoStreamWanted = false;
+  videoStreamActive = false;
+  if (videoRetryTimer !== null) {
+    clearTimeout(videoRetryTimer);
+    videoRetryTimer = null;
+  }
+  liveFeed.src = sampleFrame;
+}
+liveFeed.onerror = () => {
+  if (!videoStreamWanted) return;
+  videoStreamActive = false;
+  $('roi-message').textContent = 'Esperando imágenes del detector. Reintentando en 3 segundos...';
+  liveFeed.src = sampleFrame;
+  if (videoRetryTimer !== null) clearTimeout(videoRetryTimer);
+  videoRetryTimer = setTimeout(() => {
+    videoRetryTimer = null;
+    if (videoStreamWanted && !$('camera-panel').classList.contains('hidden')) {
+      iniciarVideoEnVivo();
+    }
+  }, 3000);
+};
+liveFeed.src=sampleFrame;
+function selectedCamera(){return cameraRows.find(row=>row.id===$('camera-space').value)||null;}
+async function loadCameraRows() {
+  const select = $('camera-space');
+  select.replaceChildren();
+  $('roi-message').textContent = 'Autorizando vídeo y cargando espacios...';
+  try {
+    // /video_feed está protegido por una cookie creada con el JWT admin.
+    await api('/admin/video-session', {method: 'POST'});
+    // Mostrar vídeo incluso cuando todavía no existan espacios con ROI.
+    iniciarVideoEnVivo();
+    try {
+      cameraRows = await api('/admin/camaras');
+      if (!cameraRows.length) {
+        select.add(new Option('No hay espacios configurados', ''));
+        return;
+      }
+      for (const row of cameraRows) {
+        select.add(new Option(`${row.codigo} · ${row.camara_id}`, row.id));
+      }
+      select.value = cameraRows[0].id;
+      select.dispatchEvent(new Event('change'));
+    } catch (error) {
+      select.add(new Option('No se pudieron cargar los espacios', ''));
+      $('roi-message').textContent = 'Vídeo iniciado; error al cargar espacios: ' + error.message;
+    }
+  } catch (error) {
+    detenerVideoEnVivo();
+    $('roi-message').textContent = 'No se pudo autorizar el vídeo: ' + error.message;
+  }
+}
+$('tab-spaces').onclick=()=>{$('world-panel').classList.add('hidden');$('monitor-panel').classList.add('hidden');detenerMonitoreo();$('camera-panel').classList.add('hidden');$('spaces-panel').classList.remove('hidden');detenerVideoEnVivo();};
+$('tab-cameras').onclick=()=>{$('world-panel').classList.add('hidden');$('monitor-panel').classList.add('hidden');detenerMonitoreo();$('spaces-panel').classList.add('hidden');$('camera-panel').classList.remove('hidden');loadCameraRows();};
+$('logout').addEventListener('click',()=>{$('world-panel').classList.add('hidden');detenerMonitoreo();$('monitor-panel').classList.add('hidden');$('camera-panel').classList.add('hidden');$('spaces-panel').classList.remove('hidden');detenerVideoEnVivo();fetch(base+'/admin/video-session/clear',{method:'POST'}).catch(()=>{});});
+ $('camera-space').onchange=()=>{cameraSpace=selectedCamera();$('space-name').value=cameraSpace?.codigo||'';if(!cameraRoiDirty){const roi=cameraSpace?.roi;cameraRoi=roi?{x:roi.x,y:roi.y,width:roi.width,height:roi.height}:null;}paintCamera();};
+function canvasPoint(event){const rect=cameraCanvas.getBoundingClientRect();return{x:Math.max(0,Math.min(cameraCanvas.width,Math.round((event.clientX-rect.left)*cameraCanvas.width/rect.width))),y:Math.max(0,Math.min(cameraCanvas.height,Math.round((event.clientY-rect.top)*cameraCanvas.height/rect.height)))};}
+cameraCanvas.onpointerdown=event=>{cameraCanvas.setPointerCapture(event.pointerId);cameraDrag=canvasPoint(event);cameraRoi={x:cameraDrag.x,y:cameraDrag.y,width:1,height:1};cameraRoiDirty=true;paintCamera();};
+cameraCanvas.onpointermove=event=>{if(!cameraDrag)return;const point=canvasPoint(event);cameraRoi={x:Math.min(cameraDrag.x,point.x),y:Math.min(cameraDrag.y,point.y),width:Math.abs(point.x-cameraDrag.x),height:Math.abs(point.y-cameraDrag.y)};paintCamera();};
+cameraCanvas.onpointerup=()=>{cameraDrag=null;if(cameraRoi&&(cameraRoi.width<4||cameraRoi.height<4)){cameraRoi=null;cameraRoiDirty=false;}paintCamera();};
+$('clear-roi').onclick=()=>{cameraDrag=null;cameraRoi=null;cameraRoiDirty=false;paintCamera();};
+$('frame-file').onchange=event=>{const file=event.target.files?.[0];if(!file)return;detenerVideoEnVivo();localFrameUrl=URL.createObjectURL(file);cameraRoi=null;liveFeed.src=localFrameUrl;};
+$('connect-live').onclick=async()=>{try{await api('/admin/video-session',{method:'POST'});iniciarVideoEnVivo();}catch(error){$('roi-message').textContent='No se pudo autorizar el vídeo: '+error.message;}};
+$('save-roi').onclick=async()=>{const espacioId=$('camera-space').value,nombre=$('space-name').value.trim(),latitud=Number($('space-latitude').value),longitud=Number($('space-longitude').value);if(!espacioId||!cameraRows.some(row=>row.id===espacioId)||!cameraRoi||cameraRoi.width<4||cameraRoi.height<4){alert('Por favor, selecciona un espacio y dibuja su recuadro en el video.');return;}if(!nombre||$('space-latitude').value.trim()===''||$('space-longitude').value.trim()===''||!Number.isFinite(latitud)||latitud < -90||latitud > 90||!Number.isFinite(longitud)||longitud < -180||longitud > 180){alert('Ingresa el nombre, una latitud entre -90 y 90 y una longitud entre -180 y 180.');return;}const button=$('save-roi');button.disabled=true;try{const response=await fetch(base+'/api/calibrar_espacio',{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify({espacio_id:espacioId,nombre,latitud,longitud,...cameraRoi,frame_width:cameraCanvas.width,frame_height:cameraCanvas.height})});const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.detail||data.message||'No se pudo guardar la configuración.');cameraSpace=selectedCamera();Object.assign(cameraSpace,data.espacio||{});cameraSpace.roi={...cameraRoi,frame_width:cameraCanvas.width,frame_height:cameraCanvas.height};const rowIndex=cameraRows.findIndex(row=>row.id===espacioId);if(rowIndex>=0)cameraRows[rowIndex]=cameraSpace;cameraRoiDirty=false;paintCamera();alert(data.detail||'Configuración guardada correctamente.');}catch(error){alert(`Error al guardar: ${error.message}`);}finally{button.disabled=false;}};
+
+// Panel privado de monitorización. Ningún dato de imagen se expone sin cookie admin.
+let monitorTimer=null, monitorLastData=null;
+function detenerMonitoreo(){
+  if(monitorTimer!==null){clearInterval(monitorTimer);monitorTimer=null;}
+  $('monitor-feed').removeAttribute('src');
+}
+function renderMonitoreo(data){
+  monitorLastData=data;
+  const stale=!!data.sin_senal;
+  $('monitor-status').textContent=stale?'Sin señal reciente':data.yolo_activo?'YOLO activo':'Detector sin YOLO';
+  $('monitor-status').className='rounded-full px-3 py-1.5 text-xs font-bold '+(stale?'bg-slate-100 text-slate-700':data.yolo_activo?'bg-emerald-100 text-emerald-800':'bg-amber-100 text-amber-800');
+  const detecciones=stale?[]:data.detecciones||[];
+  for(const [tipo,id] of [['AUTO','count-auto'],['MOTO','count-moto'],['CAMIONETA','count-camioneta']]){
+    $(id).textContent=stale?'—':detecciones.filter(d=>d.tipo===tipo).length;
+  }
+  $('count-total').textContent=stale?'—':detecciones.length;
+  $('monitor-updated').textContent=data.actualizado_en?'Último informe: '+new Date(data.actualizado_en).toLocaleString('es-EC'):'Aún no hay informes del detector';
+  const filtro=$('monitor-filter').value;
+  const visibles=detecciones.filter(d=>filtro==='TODOS'||d.tipo===filtro);
+  const lista=$('monitor-results');lista.replaceChildren();
+  if(!visibles.length){const item=document.createElement('li');item.className='rounded-xl bg-slate-50 p-3 text-sm text-slate-500';item.textContent=stale?'No hay datos recientes del detector.':'No se detectaron vehículos de esta clase en las zonas configuradas.';lista.append(item);return;}
+  for(const det of visibles){
+    const item=document.createElement('li');item.className='flex items-center justify-between gap-3 rounded-xl border border-slate-200 p-3';
+    const title=document.createElement('strong');title.className='text-sm text-slate-800';title.textContent=det.tipo;
+    const desc=document.createElement('span');desc.className='text-xs text-slate-500';desc.textContent=det.zona+' · '+Math.round(det.confianza*100)+'% confianza';
+    item.append(title,desc);lista.append(item);
+  }
+}
+async function actualizarMonitoreo(){
+  if($('monitor-panel').classList.contains('hidden')||!token)return;
+  try{renderMonitoreo(await api('/admin/detecciones'));}
+  catch(error){$('monitor-status').textContent='Error al consultar: '+error.message;}
+}
+$('monitor-filter').onchange=()=>{if(monitorLastData)renderMonitoreo(monitorLastData);};
+$('tab-monitor').onclick=async()=>{$('world-panel').classList.add('hidden');
+  $('spaces-panel').classList.add('hidden');$('camera-panel').classList.add('hidden');detenerVideoEnVivo();
+  $('monitor-panel').classList.remove('hidden');detenerMonitoreo();
+  try{await api('/admin/video-session',{method:'POST'});
+    $('monitor-feed').src=base+'/video_feed?t='+Date.now();
+    $('monitor-video-message').textContent='Visualización privada conectándose...';
+  }catch(error){$('monitor-video-message').textContent='Acceso denegado al vídeo: '+error.message;}
+  await actualizarMonitoreo();monitorTimer=setInterval(actualizarMonitoreo,1800);
+};
+$('monitor-feed').onload=()=>{$('monitor-video-message').textContent='Imagen del detector recibida.';};
+$('monitor-feed').onerror=()=>{$('monitor-video-message').textContent='No hay frames disponibles. Revisa vision_module y el token del stream.';};
+
+// Catálogo administrado de enlaces públicos. No se usan streams ocultos ni se saltan restricciones.
+const worldCameras = [
+  {name:'Nueva York · Times Square Street Cam',location:'Nueva York, EE. UU.',region:'America',type:'Calle / peatones',operator:'EarthCam',url:'https://www.earthcam.com/usa/newyork/timessquare/index.php?cam=tsstreet',desc:'Vista urbana a nivel de calle; la cantidad de vehículos visibles depende del encuadre.'},
+  {name:'Nueva York · Times Square Crossroads',location:'Nueva York, EE. UU.',region:'America',type:'Intersección',operator:'EarthCam',url:'https://www.earthcam.com/usa/newyork/timessquare/index.php?cam=tsrobo3',desc:'Vista de un cruce transitado. Se abre en el reproductor de EarthCam.'},
+  {name:'Ciudad de México · Zócalo',location:'Ciudad de México, México',region:'America',type:'Plaza / urbano',operator:'SkylineWebcams',url:'https://www.skylinewebcams.com/es/webcam/mexico/federal-district/mexico-city/zocalo.html',desc:'Vista de la plaza; no es una cámara específica de estacionamiento.'},
+  {name:'Nueva York · Times Square',location:'Nueva York, EE. UU.',region:'America',type:'Plaza / urbano',operator:'SkylineWebcams',url:'https://www.skylinewebcams.com/es/webcam/united-states/new-york/new-york/times-square.html',desc:'Transmisión pública visualizable en la página del proveedor.'},
+  {name:'California · QuickMap',location:'California, EE. UU.',region:'America',type:'Cámaras de tráfico',operator:'Caltrans',url:'https://quickmap.dot.ca.gov/',desc:'Mapa oficial de cámaras y tráfico. Activa la capa Cameras y elige una cámara.'},
+  {name:'Bratislava · Most Lanfranconi',location:'Bratislava, Eslovaquia',region:'Europa',type:'Puente / tránsito',operator:'Windy Webcams',url:'https://www.windy.com/webcams/1485367641',desc:'Cámara exterior con imágenes periódicas; no necesariamente vídeo continuo.'},
+  {name:'Windy · Buscar cámaras del mundo',location:'Directorio global',region:'Mundo',type:'Directorio',operator:'Windy',url:'https://www.windy.com/webcams',desc:'Explora otras cámaras públicas y sus permisos de inserción.'}
+];
+function renderWorldCameras(){
+  const q=$('world-search').value.trim().toLocaleLowerCase('es');
+  const region=$('world-region').value;
+  const list=$('world-list');list.replaceChildren();
+  const rows=worldCameras.filter(c=>(region==='TODOS'||region===c.region)&&[c.name,c.location,c.type,c.operator].join(' ').toLocaleLowerCase('es').includes(q));
+  for(const c of rows){
+    const card=document.createElement('article');card.className='flex flex-col justify-between rounded-2xl border border-slate-200 bg-slate-50 p-5 shadow-sm';
+    const body=document.createElement('div');
+    const eyebrow=document.createElement('p');eyebrow.className='mb-2 text-xs font-bold uppercase tracking-wider text-blue-700';eyebrow.textContent=c.operator+' · '+c.type;
+    const title=document.createElement('h3');title.className='text-lg font-extrabold text-slate-900';title.textContent=c.name;
+    const location=document.createElement('p');location.className='mt-1 text-xs font-semibold text-slate-500';location.textContent=c.location;
+    const desc=document.createElement('p');desc.className='mt-3 text-sm leading-6 text-slate-600';desc.textContent=c.desc;
+    body.append(eyebrow,title,location,desc);
+    const a=document.createElement('a');a.className='mt-5 inline-flex items-center justify-center rounded-xl bg-blue-700 px-4 py-3 text-sm font-bold text-white hover:bg-blue-800';
+    a.textContent='Abrir cámara ↗';a.href=c.url;a.target='_blank';a.rel='noopener noreferrer';
+    card.append(body,a);list.append(card);
+  }
+  $('world-count').textContent=rows.length+' fuentes encontradas · Los enlaces abren páginas públicas del proveedor.';
+}
+$('world-search').addEventListener('input',renderWorldCameras);
+$('world-region').addEventListener('change',renderWorldCameras);
+$('tab-world').onclick=()=>{
+  $('spaces-panel').classList.add('hidden');$('camera-panel').classList.add('hidden');$('monitor-panel').classList.add('hidden');
+  detenerVideoEnVivo();detenerMonitoreo();
+  $('world-panel').classList.remove('hidden');renderWorldCameras();
+};
+</script></body></html>

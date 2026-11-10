@@ -1,50 +1,27 @@
+
 {
   "camera_index": 0,
-  "frame_size": [
-    640,
-    480
-  ],
+  "frame_size": [640, 480],
   "zones": [
     {
-      "id": "UPEC-001",
+      "id": "CAM-001",
       "name": "UPEC - Espacio 1",
-      "roi": [
-        35,
-        46,
-        245,
-        113
-      ]
+      "roi": [35, 46, 245, 113]
     },
     {
-      "id": "UPEC-002",
+      "id": "CAM-002",
       "name": "UPEC - Espacio 2",
-      "roi": [
-        339,
-        48,
-        236,
-        104
-      ]
+      "roi": [339, 48, 236, 104]
     },
     {
-      "id": "UPEC-003",
+      "id": "CAM-003",
       "name": "UPEC - Espacio 3",
-      "roi": [
-        34,
-        257,
-        225,
-        118
-      ]
+      "roi": [34, 257, 225, 118]
     },
     {
-      "id": "UPEC-004",
+      "id": "CAM-004",
       "name": "UPEC - Espacio 4",
-      "roi": [
-        369,
-        249,
-        230,
-        132
-      ]
+      "roi": [369, 249, 230, 132]
     }
-    
   ]
 }
