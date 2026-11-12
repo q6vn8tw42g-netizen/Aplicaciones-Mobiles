@@ -1,0 +1,59 @@
+{
+  "camera_index": 0,
+  "frame_size": [
+    986,
+    525
+  ],
+  "zones": [
+    {
+      "id": "ANT-001",
+      "name": "Antizana - Espacio 1",
+      "roi": [
+        406,
+        195,
+        53,
+        43
+      ]
+    },
+    {
+      "id": "ANT-002",
+      "name": "Antizana - Espacio 2",
+      "roi": [
+        263,
+        299,
+        115,
+        95
+      ]
+    },
+    {
+      "id": "ANT-003",
+      "name": "Antizana - Espacio 3",
+      "roi": [
+        113,
+        206,
+        54,
+        28
+      ]
+    },
+    {
+      "id": "ANT-004",
+      "name": "Antizana - Espacio 4",
+      "roi": [
+        154,
+        345,
+        118,
+        168
+      ]
+    },
+    {
+      "id": "ANT-005",
+      "name": "Antizana - Espacio 5",
+      "roi": [
+        448,
+        177,
+        30,
+        30
+      ]
+    }
+  ]
+}

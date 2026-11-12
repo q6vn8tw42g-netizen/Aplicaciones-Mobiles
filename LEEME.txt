@@ -1,0 +1,27 @@
+ESTACIONAYA - FILTRO ANTIZANA / CAM-005
+
+Archivos:
+  app/lib/providers/espacios_provider.dart
+  app/lib/models/espacio.dart
+
+Cambios:
+- El stream productivo consulta CAM-005.
+- Solo se muestran ANT-001, ANT-002 y ANT-003 (filtrado adicional en Dart).
+- El modelo nunca presume LIBRE si falta el estado: usa SIN_SERVICIO.
+- Se conservan reservas y el resto de funciones existentes.
+
+IMPORTANTE:
+- Esto NO comprueba que Flutter use la misma URL / clave de Supabase, que RLS permita SELECT,
+  que Realtime publique UPDATE, ni que las plazas tengan coordenadas para aparecer en el mapa.
+- El heartbeat existente solo protege CAM-001; hay que implementar latidos CAM-005 antes de
+  declarar que una plaza LIBRE es confiable cuando se corta la camara.
+- El auto-liberado en FastAPI debe permanecer desactivado hasta validarlo con imagen real.
+
+Instalacion (PowerShell, en raiz del proyecto):
+  Copy-Item app\lib\providers\espacios_provider.dart app\lib\providers\espacios_provider.antes_antizana.dart.bak
+  Copy-Item app\lib\models\espacio.dart app\lib\models\espacio.antes_antizana.dart.bak
+  Expand-Archive "$HOME\Downloads\estacionaya_flutter_antizana.zip" -DestinationPath "." -Force
+  cd app
+  flutter analyze
+
+Si hay errores, restaurar los .bak.

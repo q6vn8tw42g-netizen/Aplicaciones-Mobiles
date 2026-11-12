@@ -31,7 +31,7 @@ class Espacio {
       nombre:
           (map['codigo'] ?? map['nombre'] ?? 'Espacio sin nombre').toString(),
       camaraId: map['camara_id'] as String,
-      estado: (map['estado'] ?? map['estado_reserva'] ?? 'LIBRE') as String,
+      estado: (map['estado'] ?? map['estado_reserva'] ?? 'SIN_SERVICIO').toString(),
       actualizadoEn: DateTime.parse(
         (map['updated_at'] ?? map['actualizado_en']).toString(),
       ),

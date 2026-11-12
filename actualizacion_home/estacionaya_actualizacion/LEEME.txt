@@ -1,0 +1,34 @@
+ESTACIONAYA - ACTUALIZACION DE HOME_SCREEN
+
+1. Copiar el archivo lib/screens/home_screen.dart de este paquete a:
+   C:\estacionaya-infra\estacionaya\app\lib\screens\home_screen.dart
+
+2. Antes de copiar, conservar respaldo del original.
+
+3. Desde C:\estacionaya-infra\estacionaya\app ejecutar:
+   dart format lib\screens\home_screen.dart
+   flutter analyze
+
+4. En terminal Flutter activa, hot restart (R), o reiniciar flutter run.
+
+MEJORAS:
+- Lista En vivo con tarjetas mejoradas y chips de estado.
+- Modal de detalle actualizado.
+- Boton Como llegar conecta al NavigationService existente.
+- Ordenacion por distancia tolera coordenadas NULL.
+- ANT-001/002/003 se muestran sin GPS solo en Tulcan, no en Montufar.
+- El mapa recibe solo espacios georreferenciados.
+
+IMPORTANTE:
+No es correcto inventar coordenadas geograficas. En el SQL Editor de Supabase,
+cuando tengas el GPS REAL de cada plaza, ejecuta, reemplazando los valores:
+
+UPDATE public.espacios
+SET lat = <LATITUD_REAL>, lng = <LONGITUD_REAL>
+WHERE camara_id = 'CAM-005' AND codigo = 'ANT-001';
+
+Repetir para ANT-002 y ANT-003 con ubicaciones propias verificadas.
+Las coordenadas del ROI de YOLO NO son GPS.
+
+El servicio NavigationService y MapaEspacios son dependencias preexistentes;
+este paquete no los modifica. Compilacion no verificada localmente: ejecutar flutter analyze.

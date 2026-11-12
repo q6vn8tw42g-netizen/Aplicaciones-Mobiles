@@ -13,7 +13,8 @@ class MapaEspacios extends StatefulWidget {
   final ll.LatLng? centroInicial;
   final List<TramoGeo> tramosAzules;
   final ValueChanged<TramoGeo>? onTramoSeleccionado;
-  /// Cuando se cartografía un tramo, los toques añaden vértices.
+
+  /// Cuando se cartografÃ­a un tramo, los toques aÃ±aden vÃ©rtices.
   final bool modoDibujo;
   final List<ll.LatLng> puntosBorrador;
   final ValueChanged<ll.LatLng>? onPuntoDibujo;
@@ -38,7 +39,7 @@ class MapaEspacios extends StatefulWidget {
 }
 
 class _MapaEspaciosState extends State<MapaEspacios> {
-  // Punto central del campus UPEC en TulcÃ¡n (referencia cartogrÃ¡fica pÃºblica).
+  // Punto central del campus UPEC en TulcÃƒÂ¡n (referencia cartogrÃƒÂ¡fica pÃƒÂºblica).
   static const _centroUpec = ll.LatLng(0.80525, -77.73434);
   static const _calculadorDistancia = ll.Distance();
 
@@ -87,19 +88,23 @@ class _MapaEspaciosState extends State<MapaEspacios> {
             ],
           ),
         if (widget.puntosBorrador.length >= 2)
-          PolylineLayer(polylines: [Polyline(
-            points: widget.puntosBorrador,
-            color: Colors.orange,
-            strokeWidth: 7,
-          )]),
+          PolylineLayer(polylines: [
+            Polyline(
+              points: widget.puntosBorrador,
+              color: Colors.orange,
+              strokeWidth: 7,
+            )
+          ]),
         MarkerLayer(markers: [
           ...grupos.map(_construirMarcador),
           for (final tramo in widget.tramosAzules)
             if (tramo.puntos.length >= 2) _marcadorTramo(tramo),
           ...widget.puntosBorrador.map((p) => Marker(
-            point: p, width: 22, height: 22,
-            child: const Icon(Icons.circle, size: 18, color: Colors.orange),
-          )),
+                point: p,
+                width: 22,
+                height: 22,
+                child: const Icon(Icons.circle, size: 18, color: Colors.orange),
+              )),
         ]),
         RichAttributionWidget(
           attributions: [
@@ -112,25 +117,30 @@ class _MapaEspaciosState extends State<MapaEspacios> {
   }
 
   Marker _marcadorTramo(TramoGeo tramo) {
-    // El punto está sobre la geometría validada por quien la cartografió.
+    // El punto estÃ¡ sobre la geometrÃ­a validada por quien la cartografiÃ³.
     final centro = tramo.puntos[tramo.puntos.length ~/ 2];
     return Marker(
       point: centro,
       width: 36,
       height: 40,
       child: Tooltip(
-        message: '${tramo.calle} · zona azul documentada',
+        message: '${tramo.calle} Â· zona azul documentada',
         child: InkWell(
-          onTap: widget.modoDibujo ? null : () => widget.onTramoSeleccionado?.call(tramo),
+          onTap: widget.modoDibujo
+              ? null
+              : () => widget.onTramoSeleccionado?.call(tramo),
           child: Container(
             decoration: BoxDecoration(
               color: EstacionaYaTokens.primary,
               shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 2),
-              boxShadow: const [BoxShadow(color: Color(0x40000000), blurRadius: 5)],
+              boxShadow: const [
+                BoxShadow(color: Color(0x40000000), blurRadius: 5)
+              ],
             ),
             alignment: Alignment.center,
-            child: const Icon(Icons.local_parking_rounded, color: Colors.white, size: 22),
+            child: const Icon(Icons.local_parking_rounded,
+                color: Colors.white, size: 22),
           ),
         ),
       ),
@@ -185,7 +195,7 @@ class _MapaEspaciosState extends State<MapaEspacios> {
         height: 44,
         alignment: Alignment.bottomCenter,
         child: Tooltip(
-          message: '${espacio.nombre} Â· ${_nombreEstado(estado)}',
+          message: '${espacio.nombre} Ã‚Â· ${_nombreEstado(estado)}',
           child: InkResponse(
             radius: 24,
             onTap: () => widget.onEspacioSeleccionado?.call(espacio),
@@ -240,22 +250,37 @@ class _MapaEspaciosState extends State<MapaEspacios> {
     final libres = grupo.espacios
         .where((e) => e.visionEnLinea && e.estado == 'LIBRE')
         .length;
-    final color = libres > 0
-        ? EstacionaYaTokens.available
-        : EstacionaYaTokens.occupied;
+    final sinServicio = grupo.espacios.every(
+      (e) => !e.visionEnLinea || e.estado == 'SIN_SERVICIO',
+    );
+    final color = sinServicio
+        ? EstacionaYaTokens.offline
+        : libres > 0
+            ? EstacionaYaTokens.available
+            : EstacionaYaTokens.occupied;
+
+    // Los tres espacios ANTIZANA comparten un punto de acceso GPS.
+    // El marcador agrupado abre una lista, en lugar de superponer tres pines.
+    final esGrupoAntizana = grupo.espacios.length > 1 &&
+        grupo.espacios.every((e) =>
+            e.camaraId == 'CAM-005' &&
+            const {'ANT-001', 'ANT-002', 'ANT-003'}.contains(e.nombre));
 
     return Marker(
       point: centro,
       width: 42,
       height: 42,
       child: Tooltip(
-        message:
-            '${grupo.espacios.length} espacios cercanos. Toca para acercar el mapa.',
+        message: esGrupoAntizana
+            ? 'Estacionamientos Antisana · toca para ver cada plaza'
+            : '${grupo.espacios.length} espacios cercanos. Toca para acercar el mapa.',
         child: Material(
           color: Colors.transparent,
           child: InkWell(
             customBorder: const CircleBorder(),
-            onTap: () => _controller.move(centro, math.min(_zoom + 2, 18)),
+            onTap: esGrupoAntizana
+                ? () => _mostrarPlazasAntizana(grupo.espacios)
+                : () => _controller.move(centro, math.min(_zoom + 2, 18)),
             child: Container(
               decoration: BoxDecoration(
                 color: color,
@@ -270,17 +295,90 @@ class _MapaEspaciosState extends State<MapaEspacios> {
                 ],
               ),
               child: Center(
-                child: Text(
-                  '${grupo.espacios.length}',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 17,
-                    height: 1,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
+                child: esGrupoAntizana
+                    ? Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.local_parking_rounded,
+                              color: Colors.white, size: 15),
+                          Text('${grupo.espacios.length}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                height: 1,
+                                fontWeight: FontWeight.w900,
+                              )),
+                        ],
+                      )
+                    : Text(
+                        '${grupo.espacios.length}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 17,
+                          height: 1,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
               ),
             ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _mostrarPlazasAntizana(List<Espacio> espacios) {
+    if (widget.modoDibujo) return;
+    final plazas = List<Espacio>.of(espacios)
+      ..sort((a, b) => a.nombre.compareTo(b.nombre));
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Estacionamientos Antisana',
+                  style: Theme.of(ctx).textTheme.titleLarge),
+              const SizedBox(height: 4),
+              const Text('Tulcán · Cámara CAM-005 · Acceso compartido',
+                  style: TextStyle(color: Colors.black54)),
+              const SizedBox(height: 14),
+              for (final plaza in plazas)
+                Card(
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: _colorEstado(
+                        plaza.visionEnLinea ? plaza.estado : 'SIN_SERVICIO',
+                      ).withValues(alpha: .14),
+                      child: Icon(Icons.local_parking_rounded,
+                          color: _colorEstado(
+                            plaza.visionEnLinea ? plaza.estado : 'SIN_SERVICIO',
+                          )),
+                    ),
+                    title: Text(plaza.nombre,
+                        style: const TextStyle(fontWeight: FontWeight.w700)),
+                    subtitle: Text(_nombreEstado(
+                      plaza.visionEnLinea ? plaza.estado : 'SIN_SERVICIO',
+                    )),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      widget.onEspacioSeleccionado?.call(plaza);
+                    },
+                  ),
+                ),
+              const SizedBox(height: 8),
+              const Text(
+                'Los tres espacios comparten un punto de acceso. '
+                'Sus posiciones individuales aún no están georreferenciadas.',
+                style: TextStyle(color: Colors.black54, fontSize: 12),
+              ),
+            ],
           ),
         ),
       ),

@@ -145,19 +145,28 @@ class EspaciosProvider extends ChangeNotifier {
     error = null;
     notifyListeners();
 
-    // Si no hay heartbeat reciente, CAM-001 se representa como sin servicio.
+    // El heartbeat vigente solo controla CAM-001; CAM-005 requiere un latido propio.
     _temporizadorHeartbeat = Timer.periodic(
       const Duration(milliseconds: 700),
       (_) => _actualizarDisponibilidad(),
     );
 
     try {
+       // La consulta productiva mira CAM-005; el filtro adicional por
+       // codigo excluye registros antiguos de esa misma camara.
       final stream = _espaciosStream ??
           Supabase.instance.client
               .from('espacios')
-              .stream(primaryKey: ['id']).order('camara_id');
-      _suscripcion =
-          stream.map((filas) => filas.map(Espacio.fromMap).toList()).listen(
+               .stream(primaryKey: ['id'])
+               .eq('camara_id', 'CAM-005')
+               .order('codigo');
+      _suscripcion = stream.map((filas) => filas
+           .where((fila) =>
+               fila['camara_id']?.toString() == 'CAM-005' &&
+               const {'ANT-001', 'ANT-002', 'ANT-003'}
+                   .contains(fila['codigo']?.toString()))
+           .map(Espacio.fromMap)
+           .toList(growable: false)).listen(
         (actualizados) {
           if (_disposed) return;
           // Lista completa tras INSERT, UPDATE o DELETE.
@@ -179,7 +188,7 @@ class EspaciosProvider extends ChangeNotifier {
     } catch (e) {
       _mostrarError(e);
     }
-    // Inyección de espacios indica un test/uso aislado: no requiere Supabase.
+    // InyecciÃ³n de espacios indica un test/uso aislado: no requiere Supabase.
     if (_heartbeatStream != null || _espaciosStream == null) {
       _iniciarHeartbeat();
     }
@@ -210,22 +219,28 @@ class EspaciosProvider extends ChangeNotifier {
           _actualizarDisponibilidad();
         },
         onError: (Object error, StackTrace stackTrace) {
-          debugPrint('No se pudo sincronizar el heartbeat de cámaras: $error');
+          debugPrint('No se pudo sincronizar el heartbeat de cÃ¡maras: $error');
           _ultimoHeartbeat.remove('CAM-001');
+          _ultimoHeartbeat.remove('CAM-005');
           _actualizarDisponibilidad();
         },
       );
     } catch (error) {
-      debugPrint('No se pudo iniciar el heartbeat de cámaras: $error');
+      debugPrint('No se pudo iniciar el heartbeat de cÃ¡maras: $error');
       _actualizarDisponibilidad();
     }
   }
 
   Espacio _conDisponibilidad(Espacio espacio) {
-    if (espacio.camaraId != 'CAM-001') return espacio;
+    final ventana = switch (espacio.camaraId) {
+      'CAM-001' => const Duration(seconds: 3),
+      'CAM-005' => const Duration(seconds: 10),
+      _ => null,
+    };
+    if (ventana == null) return espacio;
     final ultimo = _ultimoHeartbeat[espacio.camaraId];
     final enLinea = ultimo != null &&
-        DateTime.now().difference(ultimo) <= const Duration(seconds: 3);
+        DateTime.now().difference(ultimo) <= ventana;
     return espacio.copyWith(visionEnLinea: enLinea);
   }
 
@@ -246,13 +261,13 @@ class EspaciosProvider extends ChangeNotifier {
     if (_disposed) return;
     cargando = false;
     error = 'No se pudieron sincronizar los espacios. '
-        'Revisa la conexión y la configuración de Supabase.';
+        'Revisa la conexiÃ³n y la configuraciÃ³n de Supabase.';
     debugPrint('Error al sincronizar espacios: $e');
     notifyListeners();
   }
 
   Future<void> _cargarPerfil() async {
-    // Un fallo del perfil no debe bloquear la sincronización del mapa.
+    // Un fallo del perfil no debe bloquear la sincronizaciÃ³n del mapa.
     final usuarioCargado = usuarioId;
     if (usuarioCargado == null) return;
     try {
@@ -291,11 +306,11 @@ class EspaciosProvider extends ChangeNotifier {
       permiso = await Geolocator.requestPermission();
     }
     if (permiso == LocationPermission.denied) {
-      throw Exception('Necesitas dar permiso de ubicación para reportar.');
+      throw Exception('Necesitas dar permiso de ubicaciÃ³n para reportar.');
     }
     if (permiso == LocationPermission.deniedForever) {
-      throw Exception('El permiso de ubicación está bloqueado. '
-          'Actívalo desde la configuración del dispositivo.');
+      throw Exception('El permiso de ubicaciÃ³n estÃ¡ bloqueado. '
+          'ActÃ­valo desde la configuraciÃ³n del dispositivo.');
     }
   }
 

@@ -1,0 +1,19 @@
+{
+    "camera_index":  0,
+    "frame_size":  [
+                       986,
+                       525
+                   ],
+    "zones":  [
+                  {
+                      "id":  "ANT-002",
+                      "name":  "Antizana - Espacio 2",
+                      "roi":  [
+                                  263,
+                                  299,
+                                  115,
+                                  95
+                              ]
+                  }
+              ]
+}
