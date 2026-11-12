@@ -25,3 +25,5 @@ api/.env
 iniciar_vision.bat
 ezviz_env/
 ezviz_camaras.json
+
+api/.venv312/
