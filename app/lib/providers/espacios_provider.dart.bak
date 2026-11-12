@@ -1,0 +1,323 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../models/espacio.dart';
+import '../services/api_service.dart';
+import '../services/reserva_notification_service.dart';
+import '../services/supabase_service.dart';
+
+class EspaciosProvider extends ChangeNotifier {
+  EspaciosProvider({
+    Stream<List<Map<String, dynamic>>>? espaciosStream,
+    Stream<List<Map<String, dynamic>>>? heartbeatStream,
+  })  : _espaciosStream = espaciosStream,
+        _heartbeatStream = heartbeatStream;
+
+  final Stream<List<Map<String, dynamic>>>? _espaciosStream;
+  final Stream<List<Map<String, dynamic>>>? _heartbeatStream;
+  final ApiService _apiService = ApiService();
+  StreamSubscription<List<Espacio>>? _suscripcion;
+  StreamSubscription<List<Map<String, dynamic>>>? _suscripcionHeartbeat;
+  Timer? _temporizadorHeartbeat;
+  final Map<String, DateTime> _ultimoHeartbeat = {};
+  bool _disposed = false;
+
+  List<Espacio> espacios = [];
+  final Set<String> reservasPropias = {};
+  int puntosKarma = 0;
+  String? rol;
+  String filtroVehiculo = 'TODOS';
+  bool cargando = true;
+  String? error;
+
+  String? get usuarioId {
+    try {
+      return Supabase.instance.client.auth.currentUser?.id;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  List<Espacio> get espaciosVisibles {
+    if (filtroVehiculo == 'TODOS') return espacios;
+    return espacios
+        .where((espacio) =>
+            espacio.tipoVehiculo == 'MIXTO' ||
+            espacio.tipoVehiculo == filtroVehiculo)
+        .toList(growable: false);
+  }
+
+  void seleccionarFiltroVehiculo(String tipo) {
+    if (!const {'TODOS', 'MOTO', 'AUTO', 'CAMIONETA'}.contains(tipo) ||
+        filtroVehiculo == tipo) {
+      return;
+    }
+    filtroVehiculo = tipo;
+    notifyListeners();
+  }
+
+  Future<bool> reservar(Espacio espacio) async {
+    final respuesta = await _apiService.reservarEspacio(
+      espacioId: espacio.id,
+      tipoVehiculo: filtroVehiculo == 'TODOS' ? null : filtroVehiculo,
+    );
+    reservasPropias.add(espacio.id);
+    final expiracion = DateTime.tryParse(
+          respuesta['expiracion_reserva']?.toString() ?? '',
+        ) ??
+        DateTime.now().add(const Duration(minutes: 5));
+    espacios = espacios
+        .map((actual) => actual.id == espacio.id
+            ? actual.copyWith(
+                estado: 'RESERVADO', expiracionReserva: expiracion)
+            : actual)
+        .toList(growable: false);
+    final avisoProgramado =
+        await ReservaNotificationService.instance.programarAviso(
+      espacioId: espacio.id,
+      expiracion: expiracion,
+    );
+    notifyListeners();
+    return avisoProgramado;
+  }
+
+  Future<void> cancelarReserva(Espacio espacio) async {
+    await _apiService.cancelarReserva(espacio.id);
+    await ReservaNotificationService.instance.cancelarAviso(espacio.id);
+    reservasPropias.remove(espacio.id);
+    espacios = espacios
+        .map((actual) => actual.id == espacio.id
+            ? actual.copyWith(
+                estado: 'LIBRE',
+                limpiarExpiracionReserva: true,
+              )
+            : actual)
+        .toList(growable: false);
+    notifyListeners();
+  }
+
+  Future<void> cargarReservasPropias() async {
+    if (_disposed || usuarioId == null) return;
+    try {
+      final ids = await _apiService.obtenerMisReservas();
+      if (_disposed) return;
+      final anteriores = Set<String>.of(reservasPropias);
+      reservasPropias
+        ..clear()
+        ..addAll(ids);
+      for (final id in anteriores.difference(ids)) {
+        unawaited(ReservaNotificationService.instance.cancelarAviso(id));
+      }
+      await ReservaNotificationService.instance.reconciliarAvisos(ids);
+      if (_disposed) return;
+      notifyListeners();
+    } catch (error) {
+      debugPrint('No se pudieron cargar las reservas de la cuenta: $error');
+    }
+  }
+
+  void actualizarSesion() {
+    if (_disposed) return;
+    if (usuarioId == null) {
+      rol = null;
+      puntosKarma = 0;
+      reservasPropias.clear();
+      unawaited(ReservaNotificationService.instance
+          .reconciliarAvisos(const <String>{}));
+      notifyListeners();
+      return;
+    }
+    unawaited(_cargarPerfil());
+  }
+
+  void limpiarReservasPropias() {
+    if (reservasPropias.isEmpty) return;
+    reservasPropias.clear();
+    notifyListeners();
+  }
+
+  Future<void> iniciar() async {
+    if (_disposed || _suscripcion != null) return;
+    cargando = true;
+    error = null;
+    notifyListeners();
+
+    // El heartbeat vigente solo controla CAM-001; CAM-005 requiere un latido propio.
+    _temporizadorHeartbeat = Timer.periodic(
+      const Duration(milliseconds: 700),
+      (_) => _actualizarDisponibilidad(),
+    );
+
+    try {
+       // La consulta productiva mira CAM-005; el filtro adicional por
+       // codigo excluye registros antiguos de esa misma camara.
+      final stream = _espaciosStream ??
+          Supabase.instance.client
+              .from('espacios')
+               .stream(primaryKey: ['id'])
+               .eq('camara_id', 'CAM-005')
+               .order('codigo');
+      _suscripcion = stream.map((filas) => filas
+           .where((fila) =>
+               fila['camara_id']?.toString() == 'CAM-005' &&
+               const {'ANT-001', 'ANT-002', 'ANT-003'}
+                   .contains(fila['codigo']?.toString()))
+           .map(Espacio.fromMap)
+           .toList(growable: false)).listen(
+        (actualizados) {
+          if (_disposed) return;
+          // Lista completa tras INSERT, UPDATE o DELETE.
+          espacios = actualizados.map(_conDisponibilidad).toList();
+          for (final espacio in espacios) {
+            if (espacio.estado != 'RESERVADO' &&
+                reservasPropias.remove(espacio.id)) {
+              unawaited(ReservaNotificationService.instance
+                  .cancelarAviso(espacio.id));
+            }
+          }
+          cargando = false;
+          error = null;
+          notifyListeners();
+        },
+        onError: (Object e, StackTrace stackTrace) => _mostrarError(e),
+        onDone: () => _suscripcion = null,
+      );
+    } catch (e) {
+      _mostrarError(e);
+    }
+    // InyecciÃ³n de espacios indica un test/uso aislado: no requiere Supabase.
+    if (_heartbeatStream != null || _espaciosStream == null) {
+      _iniciarHeartbeat();
+    }
+    if (_espaciosStream == null) {
+      unawaited(_cargarPerfil());
+    }
+  }
+
+  void _iniciarHeartbeat() {
+    try {
+      final heartbeatStream = _heartbeatStream ??
+          Supabase.instance.client
+              .from('vision_heartbeat')
+              .stream(primaryKey: ['camara_id']);
+      _suscripcionHeartbeat = heartbeatStream.listen(
+        (filas) {
+          if (_disposed) return;
+          _ultimoHeartbeat.clear();
+          for (final fila in filas) {
+            final camaraId = fila['camara_id']?.toString();
+            final contacto = DateTime.tryParse(
+              fila['ultimo_contacto']?.toString() ?? '',
+            );
+            if (camaraId != null && contacto != null) {
+              _ultimoHeartbeat[camaraId] = contacto.toLocal();
+            }
+          }
+          _actualizarDisponibilidad();
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          debugPrint('No se pudo sincronizar el heartbeat de cÃ¡maras: $error');
+          _ultimoHeartbeat.remove('CAM-001');
+          _actualizarDisponibilidad();
+        },
+      );
+    } catch (error) {
+      debugPrint('No se pudo iniciar el heartbeat de cÃ¡maras: $error');
+      _actualizarDisponibilidad();
+    }
+  }
+
+  Espacio _conDisponibilidad(Espacio espacio) {
+    if (espacio.camaraId != 'CAM-001') return espacio;
+    final ultimo = _ultimoHeartbeat[espacio.camaraId];
+    final enLinea = ultimo != null &&
+        DateTime.now().difference(ultimo) <= const Duration(seconds: 3);
+    return espacio.copyWith(visionEnLinea: enLinea);
+  }
+
+  void _actualizarDisponibilidad() {
+    if (_disposed || espacios.isEmpty) return;
+    var cambio = false;
+    final actualizados = espacios.map((espacio) {
+      final actualizado = _conDisponibilidad(espacio);
+      if (actualizado.visionEnLinea != espacio.visionEnLinea) cambio = true;
+      return actualizado;
+    }).toList();
+    if (!cambio) return;
+    espacios = actualizados;
+    notifyListeners();
+  }
+
+  void _mostrarError(Object e) {
+    if (_disposed) return;
+    cargando = false;
+    error = 'No se pudieron sincronizar los espacios. '
+        'Revisa la conexiÃ³n y la configuraciÃ³n de Supabase.';
+    debugPrint('Error al sincronizar espacios: $e');
+    notifyListeners();
+  }
+
+  Future<void> _cargarPerfil() async {
+    // Un fallo del perfil no debe bloquear la sincronizaciÃ³n del mapa.
+    final usuarioCargado = usuarioId;
+    if (usuarioCargado == null) return;
+    try {
+      final perfil = await SupabaseService().obtenerMiPerfil();
+      if (_disposed || usuarioId != usuarioCargado || perfil == null) return;
+      puntosKarma = perfil['puntos_karma'] as int? ?? 0;
+      rol = perfil['rol'] as String?;
+      notifyListeners();
+      await cargarReservasPropias();
+    } catch (e) {
+      debugPrint('No se pudo cargar el perfil: $e');
+    }
+  }
+
+  Future<void> reportar(Espacio espacio, String tipo) async {
+    await _verificarPermisoUbicacion();
+    final posicion = await Geolocator.getCurrentPosition(
+      desiredAccuracy: LocationAccuracy.high,
+    );
+    await _apiService.reportar(
+      espacioId: espacio.id,
+      tipo: tipo,
+      latitud: posicion.latitude,
+      longitud: posicion.longitude,
+    );
+    if (_disposed) return;
+    if (tipo == 'VOY_A_SALIR') {
+      puntosKarma += 10;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _verificarPermisoUbicacion() async {
+    var permiso = await Geolocator.checkPermission();
+    if (permiso == LocationPermission.denied) {
+      permiso = await Geolocator.requestPermission();
+    }
+    if (permiso == LocationPermission.denied) {
+      throw Exception('Necesitas dar permiso de ubicaciÃ³n para reportar.');
+    }
+    if (permiso == LocationPermission.deniedForever) {
+      throw Exception('El permiso de ubicaciÃ³n estÃ¡ bloqueado. '
+          'ActÃ­valo desde la configuraciÃ³n del dispositivo.');
+    }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _temporizadorHeartbeat?.cancel();
+    final suscripcion = _suscripcion;
+    _suscripcion = null;
+    if (suscripcion != null) unawaited(suscripcion.cancel());
+    final heartbeat = _suscripcionHeartbeat;
+    _suscripcionHeartbeat = null;
+    if (heartbeat != null) unawaited(heartbeat.cancel());
+    super.dispose();
+  }
+}

@@ -1,23 +1,40 @@
+
 # ============================================================
-# EstacionaYa · API de negocio
+# ESTACIONAYA - DOCKER COMPOSE
+# API FastAPI + conexion con Supabase
 #
-# Supabase NO se levanta aquí: se administra con el Supabase CLI
-# (`supabase start`), que ya maneja su propio stack de Docker
-# (Postgres, Auth, Realtime, Studio, etc.). Este compose es solo
-# para la API de negocio. La visión se ejecuta en el host para acceder
-# de forma fiable a la webcam.
+# Supabase se administra por separado con Supabase CLI.
+# La vision EZVIZ + YOLOv8 se ejecuta en Windows.
 # ============================================================
-version: "3.9"
 
 services:
   api:
     build:
       context: ./api
+
     container_name: estacionaya_api
+
     restart: unless-stopped
+
     volumes:
       - ./api:/app
+
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
+
     env_file:
       - ./api/.env
+
+    environment:
+      SUPABASE_URL: http://supabase_kong_estacionaya:8000
+
+    networks:
+      - default
+      - supabase_network_estacionaya
+
+networks:
+  default:
+
+  supabase_network_estacionaya:
+    external: true
+    name: supabase_network_estacionaya

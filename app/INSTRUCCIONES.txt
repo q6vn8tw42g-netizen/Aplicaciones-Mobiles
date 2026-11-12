@@ -1,0 +1,5 @@
+ESTACIONAYA - MAPA ANTIZANA
+
+Respaldar app\lib\widgets\mapa_espacios.dart. Extraer este ZIP dentro de app; el ZIP contiene lib/widgets/mapa_espacios.dart. Ejecutar dart format lib\widgets\mapa_espacios.dart y flutter analyze. Reiniciar Flutter Web pulsando R en su terminal.
+
+El marcador compartido solo aparece si los registros ANT-001, ANT-002, ANT-003 tienen coordenadas geográficas validadas. No se modifica Supabase mediante este ZIP.

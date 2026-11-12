@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import hmac
+import json
 import logging
 import os
 import time
@@ -7,7 +8,10 @@ from pathlib import Path
 import threading
 from uuid import UUID
 
-from fastapi import Body, Cookie, Depends, FastAPI, Header, HTTPException, Request, Response, status
+from pydantic import BaseModel, Field
+from typing import Literal
+
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials
@@ -17,7 +21,9 @@ from .schemas import CalibrarEspacioIn, ForzarEstadoIn, PerfilOut, ReporteConduc
 from .supabase_client import get_supabase_admin
 
 app = FastAPI(title="EstacionaYa API", version="0.1.0")
-LOG = logging.getLogger("estacionaya.api")
+LOG = logging.getLogger("uvicorn.error")
+LOG.setLevel(logging.INFO)  # Hace visibles los diagnosticos en docker logs.
+
 RESERVA_MINUTOS = 5
 RESERVA_SWEEP_SEGUNDOS = 5
 _reserva_stop = threading.Event()
@@ -118,63 +124,199 @@ async def recibir_frame_vision(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-# Resumen efímero de detecciones, sin guardar imágenes ni matrículas.
-# Los registros se consultan solo con JWT administrador.
-_detection_lock = threading.Lock()
-_detection_state = {"actualizado_en": None, "yolo_activo": False, "detecciones": []}
+# Observaciones temporales de la cámara ANTIZANA; no modifican Supabase.
+# Se descartan como observaciones vigentes si no llegan novedades en 8 segundos.
+_estado_vision_lock = threading.Lock()
+_estado_vision: dict[str, dict] = {}
+_estado_vision_actualizado = 0.0
+ESTADOS_VISION = {"OCUPADO_PROBABLE", "VERIFICANDO", "SIN_DETECCION"}
+ZONAS_ANTIZANA = {f"ANT-{n:03d}" for n in range(1, 6)}
+
+class EstadoZonaIn(BaseModel):
+    id: str = Field(min_length=7, max_length=7)
+    estado: Literal["OCUPADO_PROBABLE", "VERIFICANDO", "SIN_DETECCION"]
+
+class ObservacionCamaraIn(BaseModel):
+    camara: Literal["ANTIZANA FRENTE UPEC"]
+    zonas: list[EstadoZonaIn] = Field(min_length=1, max_length=5)
+
+# Asociación explícita ANT -> codigo real de espacios. Nunca se inventa una correspondencia.
+# Ejemplo en api/.env: VISION_ZONE_SPACE_MAP={"ANT-002":"UPEC-002"}
+# No publiques este mapa hasta comprobar la ubicación física y el código en Supabase.
+
+def _mapa_espacios_vision() -> dict[str, str]:
+    raw = os.getenv("VISION_ZONE_SPACE_MAP", "{}").strip() or "{}"
+    try:
+        mapping = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("VISION_ZONE_SPACE_MAP debe ser JSON valido") from exc
+    if not isinstance(mapping, dict):
+        raise RuntimeError("VISION_ZONE_SPACE_MAP debe ser un objeto JSON")
+    if any(key not in ZONAS_ANTIZANA or not isinstance(code, str) or not code.strip()
+           for key, code in mapping.items()):
+        raise RuntimeError("El mapa necesita zonas ANT-001..005 y codigos no vacios")
+    if len(set(mapping.values())) != len(mapping):
+        raise RuntimeError("Dos zonas no pueden representar el mismo espacio")
+    return mapping
 
 
-@app.post("/vision/detections", status_code=status.HTTP_204_NO_CONTENT)
-def recibir_detecciones_vision(
-    payload: dict = Body(...),
+# Los contadores solo avanzan cuando llegan observaciones frescas de la camara.
+# La liberacion automatica es OPT-IN, tras revisar los ROI y la visibilidad nocturna.
+_inicio_ausencia: dict[str, float] = {}
+_ultima_ocupacion: dict[str, float] = {}
+
+
+def _sincronizar_espacios_observados(zonas: list[EstadoZonaIn]) -> dict[str, str]:
+    mapping = _mapa_espacios_vision()
+    if not mapping:
+        LOG.warning("ANT MAPA VACIO: no se sincronizaran espacios")
+        return {}
+    db = get_supabase_admin()
+    actualizados: dict[str, str] = {}
+    try:
+        db.table("vision_heartbeat").upsert({
+            "camara_id": "CAM-005",
+            "ultimo_contacto": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+    except Exception:
+        LOG.exception("ANT HEARTBEAT: no se pudo renovar CAM-005")
+    ahora = datetime.now(timezone.utc)
+    ahora_mono = time.monotonic()
+    auto_liberar = os.getenv("VISION_AUTO_FREE", "false").strip().lower() == "true"
+    tiempo_ausencia = max(45, int(os.getenv("VISION_FREE_SECONDS", "60")))
+    for zona in zonas:
+        codigo = mapping.get(zona.id)
+        if not codigo:
+            LOG.warning("ANT SIN MAPEO: zona=%s", zona.id)
+            continue
+        LOG.info("ANT RECIBIDO: zona=%s, deteccion=%s, codigo=%s", zona.id, zona.estado, codigo)
+        if zona.estado == "OCUPADO_PROBABLE":
+            _inicio_ausencia.pop(zona.id, None)
+            _ultima_ocupacion[zona.id] = ahora_mono
+            nuevo_estado = "OCUPADO"
+            previo = "LIBRE"
+            LOG.info(
+                "ANT DIAGNOSTICO: zona=%s, deteccion=%s, destino=%s",
+                zona.id, zona.estado, codigo,
+            )
+        elif zona.estado == "SIN_DETECCION":
+            _inicio_ausencia.setdefault(zona.id, ahora_mono)
+            if not auto_liberar or ahora_mono - _inicio_ausencia[zona.id] < tiempo_ausencia:
+                LOG.info("ANT AUSENCIA NO LIBERADA: zona=%s, auto_liberar=%s, segundos=%.1f/%s",
+                         zona.id, auto_liberar, ahora_mono - _inicio_ausencia[zona.id], tiempo_ausencia)
+                continue
+            nuevo_estado = "LIBRE"
+            previo = "OCUPADO"
+        else:
+            # Un estado VERIFICANDO invalida la ausencia continua.
+            _inicio_ausencia.pop(zona.id, None)
+            LOG.info("ANT VERIFICANDO: zona=%s; sin cambios en Supabase", zona.id)
+            continue
+
+        consulta = (db.table("espacios")
+                    .select("id,codigo,estado,fuente,bloqueado_hasta")
+                    .eq("codigo", codigo).limit(2).execute())
+        rows = consulta.data or []
+        if len(rows) != 1:
+            LOG.error("Mapa incorrecto: %s -> %s (filas=%s)", zona.id, codigo, len(rows))
+            continue
+        row = rows[0]
+        LOG.info("ANT BD: zona=%s, codigo=%s, estado=%s, fuente=%s, bloqueo=%s",
+                 zona.id, codigo, row.get("estado"), row.get("fuente"), row.get("bloqueado_hasta"))
+        bloqueo = row.get("bloqueado_hasta")
+        if bloqueo:
+            try:
+                if _parse_datetime(bloqueo) > ahora:
+                    LOG.info("ANT BLOQUEADO: zona=%s, hasta=%s", zona.id, bloqueo)
+                    continue
+            except (ValueError, TypeError):
+                LOG.warning("Bloqueo no interpretable para %s; se omite", codigo)
+                continue
+        if row["estado"] != previo:
+            LOG.info(
+                "ANT SIN CAMBIO: zona=%s, estado_actual=%s, esperado=%s",
+                zona.id, row["estado"], previo,
+            )
+            continue
+        LOG.info(
+            "ANT INTENTANDO ACTUALIZAR: zona=%s, %s -> %s",
+            zona.id, previo, nuevo_estado,
+        )
+        # Solo revertir una ocupacion originada por la camara; nunca pisar bloqueos humanos.
+        if nuevo_estado == "LIBRE" and row.get("fuente") != "CAMARA":
+            LOG.warning("ANT LIBERACION OMITIDA: zona=%s, fuente=%s", zona.id, row.get("fuente"))
+            continue
+        condicion = (db.table("espacios")
+                     .update({"estado": nuevo_estado, "fuente": "CAMARA"})
+                     .eq("id", row["id"]).eq("estado", previo))
+        if nuevo_estado == "LIBRE":
+            condicion = condicion.eq("fuente", "CAMARA")
+        try:
+            resultado = condicion.execute()  # El builder de UPDATE ya devuelve filas; no admite .select()
+        except Exception:
+            LOG.exception("ANT ERROR SUPABASE: zona=%s, codigo=%s, cambio=%s->%s",
+                          zona.id, codigo, previo, nuevo_estado)
+            raise
+        if not resultado.data:
+            LOG.warning(
+                "ANT SIN FILAS ACTUALIZADAS: zona=%s, codigo=%s, cambio=%s->%s; revisar condiciones o triggers",
+                zona.id, codigo, previo, nuevo_estado,
+            )
+        if resultado.data:
+            actualizados[zona.id] = codigo
+            LOG.info("Observacion ANT %s -> espacio %s: %s", zona.id, codigo, nuevo_estado)
+            if nuevo_estado == "LIBRE":
+                # Evita escrituras repetidas mientras sigue vacio.
+                _inicio_ausencia[zona.id] = ahora_mono
+    return actualizados
+
+
+@app.post("/vision/zonas", status_code=204)
+def recibir_estados_vision(
+    reporte: ObservacionCamaraIn,
     x_vision_token: str = Header(default=""),
 ):
-    expected = os.getenv("VISION_STREAM_TOKEN", "").strip()
-    if not expected:
-        raise HTTPException(status_code=503, detail="Detector no configurado")
-    if not hmac.compare_digest(x_vision_token, expected):
+    esperado = os.getenv("VISION_STREAM_TOKEN", "").strip()
+    if not esperado:
+        raise HTTPException(status_code=503, detail="Token de visión no configurado")
+    if not hmac.compare_digest(x_vision_token, esperado):
         raise HTTPException(status_code=401, detail="Token de visión inválido")
-    items = payload.get("detecciones", [])
-    if not isinstance(items, list) or len(items) > 100:
-        raise HTTPException(status_code=400, detail="Detecciones inválidas")
-    limpio = []
-    for item in items:
-        if not isinstance(item, dict):
-            raise HTTPException(status_code=400, detail="Detección inválida")
-        tipo = item.get("tipo")
-        zona = item.get("zona")
-        confianza = item.get("confianza")
-        if tipo not in ("AUTO", "MOTO", "CAMIONETA") or not isinstance(zona, str) or not 1 <= len(zona) <= 64:
-            raise HTTPException(status_code=400, detail="Clase o zona inválida")
-        if not isinstance(confianza, (int, float)) or not 0 <= confianza <= 1:
-            raise HTTPException(status_code=400, detail="Confianza inválida")
-        limpio.append({"zona": zona, "tipo": tipo, "confianza": round(float(confianza), 3)})
-    with _detection_lock:
-        _detection_state.update({
-            "actualizado_en": datetime.now(timezone.utc).isoformat(),
-            "yolo_activo": payload.get("yolo_activo") is True,
-            "detecciones": limpio,
-        })
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    identificadores = [z.id for z in reporte.zonas]
+    if any(z not in ZONAS_ANTIZANA for z in identificadores) or len(set(identificadores)) != len(identificadores):
+        raise HTTPException(status_code=422, detail="Zonas ANT inválidas o duplicadas")
+    ahora = datetime.now(timezone.utc).isoformat()
+    global _estado_vision, _estado_vision_actualizado
+    with _estado_vision_lock:
+        _estado_vision = {z.id: {"id": z.id, "estado": z.estado, "observado_en": ahora} for z in reporte.zonas}
+        _estado_vision_actualizado = time.monotonic()
+    LOG.info("ANT REPORTE: camara=%s, zonas=%s",
+             reporte.camara, ", ".join(f"{z.id}:{z.estado}" for z in reporte.zonas))
+    try:
+        cambios = _sincronizar_espacios_observados(reporte.zonas)
+        if cambios:
+            LOG.info("ANT SINCRONIZADOS: %s", cambios)
+    except Exception:
+        LOG.exception("Fallo la sincronizacion ANT -> Supabase; observaciones disponibles en el panel")
+        raise HTTPException(status_code=503, detail="No se pudo sincronizar ocupacion con Supabase")
+    return Response(status_code=204)
 
-
-@app.get("/admin/detecciones")
-def consultar_detecciones_admin(usuario: dict = Depends(requerir_rol("admin"))):
+@app.get("/admin/vision/zonas")
+def ver_estados_vision(usuario: dict = Depends(requerir_rol("admin"))):
     del usuario
-    with _detection_lock:
-        datos = dict(_detection_state)
-        datos["detecciones"] = list(datos["detecciones"])
-    if datos["actualizado_en"]:
-        edad = (datetime.now(timezone.utc) - datetime.fromisoformat(datos["actualizado_en"])).total_seconds()
-        if edad > 8:
-            datos["detecciones"] = []
-            datos["yolo_activo"] = False
-            datos["sin_senal"] = True
-        else:
-            datos["sin_senal"] = False
-    else:
-        datos["sin_senal"] = True
-    return datos
+    with _estado_vision_lock:
+        copia = dict(_estado_vision)
+        vigente = bool(copia) and time.monotonic() - _estado_vision_actualizado <= 8
+    return {
+        "camara": "ANTIZANA FRENTE UPEC",
+        "en_linea": vigente,
+        "mapeo_espacios": _mapa_espacios_vision(),
+        "zonas": [
+            copia.get(id, {"id": id, "estado": "SIN_DATOS", "observado_en": None})
+            if vigente else {"id": id, "estado": "SIN_DATOS", "observado_en": None}
+            for id in sorted(ZONAS_ANTIZANA)
+        ],
+        "nota": "OCUPADO_PROBABLE es una detección automática, no confirmación humana. SIN_DETECCION no equivale a LIBRE.",
+    }
 
 
 @app.post("/admin/video-session")
@@ -272,7 +414,7 @@ def listar_espacios_upec(usuario: dict = Depends(requerir_rol("admin"))):
         get_supabase_admin()
         .table("espacios")
         .select("id,codigo,camara_id,estado,estado_reserva,expiracion_reserva,tipo_vehiculo,vehiculo_detectado,lat,lng,latitud,longitud,bloqueado_hasta,updated_at")
-        .like("codigo", "UPEC%")
+        .like("codigo", "ANT-%")
         .order("codigo")
         .execute()
     )
@@ -291,7 +433,7 @@ def actualizar_tipo_vehiculo_espacio(
         get_supabase_admin().table("espacios")
         .update({"tipo_vehiculo": body.tipo_vehiculo})
         .eq("id", str(espacio_id))
-        .like("codigo", "UPEC%")
+        .like("codigo", "ANT-%")
         .select("id,codigo,tipo_vehiculo")
         .execute()
     )
@@ -308,7 +450,7 @@ def listar_configuracion_camaras(
     """Lista los cuatro espacios de estacionamiento y sus ROI."""
     del usuario
 
-    camera_ids = ["CAM-001", "CAM-002", "CAM-003", "CAM-004"]
+    camera_ids = ["CAM-005"]
 
     espacios = (
         get_supabase_admin()
@@ -355,7 +497,7 @@ def guardar_roi_camara(
 
     supabase = get_supabase_admin()
 
-    camera_ids = ["CAM-001", "CAM-002", "CAM-003", "CAM-004"]
+    camera_ids = ["CAM-005"]
 
     espacio = (
         supabase.table("espacios")
@@ -582,7 +724,7 @@ def calibrar_espacio(
         supabase.table("espacios")
         .select("id,camara_id,codigo")
         .eq("id", str(body.espacio_id))
-        .like("codigo", "UPEC%")
+        .like("codigo", "ANT-%")
         .maybe_single()
         .execute()
     )

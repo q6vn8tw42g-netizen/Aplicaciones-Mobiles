@@ -6,16 +6,6 @@
   ],
   "zones": [
     {
-      "id": "ANT-001",
-      "name": "Antizana - Espacio 1",
-      "roi": [
-        406,
-        195,
-        53,
-        43
-      ]
-    },
-    {
       "id": "ANT-002",
       "name": "Antizana - Espacio 2",
       "roi": [
@@ -26,34 +16,26 @@
       ]
     },
     {
+      "id": "ANT-001",
+      "name": "Antizana - Nueva plaza 001",
+      "roi": [
+        158,
+        418,
+        239,
+        104
+      ],
+      "calibrated_new": true
+    },
+    {
       "id": "ANT-003",
-      "name": "Antizana - Espacio 3",
+      "name": "Antizana - Nueva plaza 003",
       "roi": [
-        113,
-        206,
-        54,
-        28
-      ]
-    },
-    {
-      "id": "ANT-004",
-      "name": "Antizana - Espacio 4",
-      "roi": [
-        154,
-        345,
-        118,
-        168
-      ]
-    },
-    {
-      "id": "ANT-005",
-      "name": "Antizana - Espacio 5",
-      "roi": [
-        448,
-        177,
-        30,
-        30
-      ]
+        473,
+        291,
+        104,
+        210
+      ],
+      "calibrated_new": true
     }
   ]
 }
