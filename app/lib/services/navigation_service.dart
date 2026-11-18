@@ -20,11 +20,21 @@ class NavigationService {
       },
     );
 
-    await _abrirNavegador(
-      uriAndroid: Uri.parse('google.navigation:q=$latitud,$longitud&mode=d'),
-      uriWeb: uriWeb,
-      nombre: 'Google Maps',
-    );
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      const canal = MethodChannel('estacionaya/navigation');
+      try {
+        final abierta = await canal.invokeMethod<bool>('openGoogleMaps', {
+          'latitude': latitud,
+          'longitude': longitud,
+        });
+        if (abierta == true) return;
+      } on PlatformException {
+        // Un dispositivo con apertura restringida puede disponer de navegador.
+      } on MissingPluginException {
+        // Un host sin integración Android también acepta la URL universal.
+      }
+    }
+    await _abrirWeb(uriWeb, 'Google Maps');
   }
 
   static Future<void> abrirWaze({
@@ -40,18 +50,7 @@ class NavigationService {
       },
     );
 
-    await _abrirNavegador(
-      uriAndroid: Uri.parse('waze://?ll=$latitud,$longitud&navigate=yes'),
-      uriWeb: uriWeb,
-      nombre: 'Waze',
-    );
-  }
-
-  static Future<void> _abrirNavegador({
-    required Uri uriAndroid,
-    required Uri uriWeb,
-    required String nombre,
-  }) async {
+    final uriAndroid = Uri.parse('waze://?ll=$latitud,$longitud&navigate=yes');
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
       try {
         if (await canLaunchUrl(uriAndroid) &&
@@ -67,6 +66,10 @@ class NavigationService {
       }
     }
 
+    await _abrirWeb(uriWeb, 'Waze');
+  }
+
+  static Future<void> _abrirWeb(Uri uriWeb, String nombre) async {
     try {
       if (await launchUrl(uriWeb, mode: LaunchMode.externalApplication)) {
         return;

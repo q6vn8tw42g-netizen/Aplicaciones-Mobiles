@@ -103,7 +103,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             style: Theme.of(context).textTheme.headlineSmall),
                         const SizedBox(height: 6),
                         Text(
-                          'Encuentra tu espacio en UPEC',
+                          'Consulta zonas y espacios monitoreados',
                           textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.bodyMedium,
                         ),

@@ -42,11 +42,11 @@ class EspacioCard extends StatelessWidget {
         onNavegar != null;
 
     return Card(
-      elevation: 2,
+      elevation: 1,
       shadowColor: const Color(0x160F172A),
       clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(20),
         side: BorderSide(
           color: seleccionado
               ? EstacionaYaTokens.primary
@@ -61,16 +61,19 @@ class EspacioCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              Wrap(
+                spacing: 12,
+                runSpacing: 10,
+                crossAxisAlignment: WrapCrossAlignment.start,
                 children: [
-                  Expanded(
+                  SizedBox(
+                    width: MediaQuery.sizeOf(context).width > 600 ? 240 : 180,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
                           _nombreVisual(espacio.nombre),
-                          maxLines: 1,
+                          maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.titleMedium,
                         ),
@@ -82,7 +85,6 @@ class EspacioCard extends StatelessWidget {
                       ],
                     ),
                   ),
-                  const SizedBox(width: EstacionaYaTokens.space8),
                   _EstadoBadge(
                     texto: estadoVisual.texto,
                     color: estadoVisual.colorTexto,
@@ -336,7 +338,11 @@ class _EstadoBadge extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) => AnimatedContainer(
+        duration: MediaQuery.disableAnimationsOf(context)
+            ? Duration.zero
+            : const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
         decoration: BoxDecoration(
           color: fondo,

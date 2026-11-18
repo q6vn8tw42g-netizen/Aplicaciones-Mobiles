@@ -55,9 +55,13 @@ class _SplashScreenState extends State<SplashScreen>
       backgroundColor: EstacionaYaTokens.primary,
       body: Center(
         child: FadeTransition(
-          opacity: _fadeAnimation,
+          opacity: MediaQuery.disableAnimationsOf(context)
+              ? const AlwaysStoppedAnimation(1)
+              : _fadeAnimation,
           child: ScaleTransition(
-            scale: _scaleAnimation,
+            scale: MediaQuery.disableAnimationsOf(context)
+                ? const AlwaysStoppedAnimation(1)
+                : _scaleAnimation,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [

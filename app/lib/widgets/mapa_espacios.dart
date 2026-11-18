@@ -3,14 +3,22 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as ll;
+import 'package:provider/provider.dart';
+
+import '../providers/espacios_provider.dart';
 
 import '../models/espacio.dart';
+import 'parking_status.dart';
 import '../data/tramos_geometria.dart';
 import '../theme/estacionaya_theme.dart';
 
 class MapaEspacios extends StatefulWidget {
   final List<Espacio> espacios;
   final ll.LatLng? centroInicial;
+  final ll.LatLng? ubicacionUsuario;
+  final ll.LatLng? foco;
+  final int solicitudFoco;
+  final bool sincronizado;
   final List<TramoGeo> tramosAzules;
   final ValueChanged<TramoGeo>? onTramoSeleccionado;
 
@@ -25,6 +33,10 @@ class MapaEspacios extends StatefulWidget {
     super.key,
     required this.espacios,
     this.centroInicial,
+    this.ubicacionUsuario,
+    this.foco,
+    this.solicitudFoco = 0,
+    this.sincronizado = true,
     this.tramosAzules = const [],
     this.onTramoSeleccionado,
     this.modoDibujo = false,
@@ -53,6 +65,23 @@ class _MapaEspaciosState extends State<MapaEspacios> {
   }
 
   @override
+  void didUpdateWidget(MapaEspacios oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.solicitudFoco == oldWidget.solicitudFoco || widget.foco == null) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && widget.foco != null) _controller.move(widget.foco!, 17);
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final puntos = widget.espacios
         .where((espacio) => espacio.latitud != null && espacio.longitud != null)
@@ -62,7 +91,7 @@ class _MapaEspaciosState extends State<MapaEspacios> {
     return FlutterMap(
       mapController: _controller,
       options: MapOptions(
-        initialCenter: widget.centroInicial ?? _centroUpec,
+        initialCenter: widget.foco ?? widget.centroInicial ?? _centroUpec,
         initialZoom: 17,
         maxZoom: 18,
         onMapEvent: _alCambiarCamara,
@@ -96,6 +125,27 @@ class _MapaEspaciosState extends State<MapaEspacios> {
             )
           ]),
         MarkerLayer(markers: [
+          if (widget.ubicacionUsuario case final posicion?)
+            Marker(
+                point: posicion,
+                height: 28,
+                width: 28,
+                child: Semantics(
+                    label: 'Mi ubicación',
+                    child: DecoratedBox(
+                        decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: EstacionaYaTokens.primary
+                                .withValues(alpha: .18)),
+                        child: Center(
+                            child: Container(
+                                width: 16,
+                                height: 16,
+                                decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: EstacionaYaTokens.primary,
+                                    border: Border.all(
+                                        color: Colors.white, width: 2))))))),
           ...grupos.map(_construirMarcador),
           for (final tramo in widget.tramosAzules)
             if (tramo.puntos.length >= 2) _marcadorTramo(tramo),
@@ -106,12 +156,15 @@ class _MapaEspaciosState extends State<MapaEspacios> {
                 child: const Icon(Icons.circle, size: 18, color: Colors.orange),
               )),
         ]),
-        RichAttributionWidget(
-          attributions: [
-            TextSourceAttribution('OpenStreetMap', onTap: () {}),
-          ],
-          showFlutterMapAttribution: false,
-        ),
+        const Align(
+            alignment: Alignment.topRight,
+            child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                child: ColoredBox(
+                    color: Color(0xEEFFFFFF),
+                    child: Text(' © OpenStreetMap ',
+                        style: TextStyle(
+                            color: EstacionaYaTokens.muted, fontSize: 10))))),
       ],
     );
   }
@@ -185,79 +238,48 @@ class _MapaEspaciosState extends State<MapaEspacios> {
     final centro = grupo.centro;
     if (!grupo.esCluster) {
       final espacio = grupo.espacios.single;
-      final estado = espacio.visionEnLinea ? espacio.estado : 'SIN_SERVICIO';
-      final color = _colorEstado(estado);
+      final estado = estadoVisible(espacio, sincronizado: widget.sincronizado);
+      final color = colorEstado(estado);
       final seleccionado = espacio.id == widget.espacioSeleccionadoId;
 
       return Marker(
         point: centro,
-        width: 40,
-        height: 44,
-        alignment: Alignment.bottomCenter,
+        width: 48,
+        height: 48,
+        rotate: true,
+        alignment: Alignment.topCenter,
         child: Tooltip(
-          message: '${espacio.nombre} Ã‚Â· ${_nombreEstado(estado)}',
-          child: InkResponse(
-            radius: 24,
-            onTap: () => widget.onEspacioSeleccionado?.call(espacio),
-            child: AnimatedScale(
-              scale: seleccionado ? 1.08 : 1,
-              duration: const Duration(milliseconds: 160),
-              child: SizedBox(
-                width: 40,
-                height: 44,
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    Icon(
-                      Icons.location_on_rounded,
-                      size: 42,
-                      color: color,
-                      shadows: const [
-                        Shadow(
-                          color: Color(0x66000000),
-                          blurRadius: 4,
-                          offset: Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    Positioned(
-                      top: 7,
-                      child: Text(
-                        'P',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          height: 1,
-                          fontWeight: FontWeight.w900,
-                          shadows: [
-                            Shadow(
-                              color: color.withValues(alpha: 0.35),
-                              blurRadius: 2,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
+            message: '${espacio.nombre} · ${etiquetaEstado(estado)}',
+            child: InkResponse(
+                radius: 24,
+                onTap: () => widget.onEspacioSeleccionado?.call(espacio),
+                child: AnimatedScale(
+                    alignment: Alignment.bottomCenter,
+                    scale: seleccionado ? 1.08 : 1,
+                    duration: MediaQuery.disableAnimationsOf(context)
+                        ? Duration.zero
+                        : const Duration(milliseconds: 160),
+                    child: CustomPaint(
+                        painter: _PinPainter(color),
+                        child: Align(
+                            alignment: const Alignment(0, -.25),
+                            child: Icon(iconoEstado(estado),
+                                size: 18, color: Colors.white)))))),
       );
     }
 
-    final libres = grupo.espacios
-        .where((e) => e.visionEnLinea && e.estado == 'LIBRE')
-        .length;
-    final sinServicio = grupo.espacios.every(
-      (e) => !e.visionEnLinea || e.estado == 'SIN_SERVICIO',
-    );
-    final color = sinServicio
-        ? EstacionaYaTokens.offline
-        : libres > 0
-            ? EstacionaYaTokens.available
-            : EstacionaYaTokens.occupied;
+    final estados = grupo.espacios
+        .map((e) => estadoVisible(e, sincronizado: widget.sincronizado));
+    final libres = estados.where((estado) => estado == 'LIBRE').length;
+    final todosOcupados = estados.every((estado) => estado == 'OCUPADO');
+    final todosReservados = estados.every((estado) => estado == 'RESERVADO');
+    final color = libres > 0
+        ? EstacionaYaTokens.available
+        : todosOcupados
+            ? EstacionaYaTokens.occupied
+            : todosReservados
+                ? EstacionaYaTokens.reserved
+                : EstacionaYaTokens.offline;
 
     // Los tres espacios ANTIZANA comparten un punto de acceso GPS.
     // El marcador agrupado abre una lista, en lugar de superponer tres pines.
@@ -268,8 +290,9 @@ class _MapaEspaciosState extends State<MapaEspacios> {
 
     return Marker(
       point: centro,
-      width: 42,
-      height: 42,
+      width: 48,
+      height: 48,
+      rotate: true,
       child: Tooltip(
         message: esGrupoAntizana
             ? 'Estacionamientos Antisana · toca para ver cada plaza'
@@ -329,14 +352,15 @@ class _MapaEspaciosState extends State<MapaEspacios> {
 
   void _mostrarPlazasAntizana(List<Espacio> espacios) {
     if (widget.modoDibujo) return;
-    final plazas = List<Espacio>.of(espacios)
-      ..sort((a, b) => a.nombre.compareTo(b.nombre));
-    showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (ctx) => SafeArea(
-        child: Padding(
+    final provider = context.read<EspaciosProvider?>();
+    final ids = espacios.map((e) => e.id).toSet();
+    Widget detalle(BuildContext ctx) {
+      final plazas = (provider?.espacios ?? espacios)
+          .where((e) => ids.contains(e.id))
+          .toList()
+        ..sort((a, b) => a.nombre.compareTo(b.nombre));
+      return SafeArea(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -345,25 +369,37 @@ class _MapaEspaciosState extends State<MapaEspacios> {
               Text('Estacionamientos Antisana',
                   style: Theme.of(ctx).textTheme.titleLarge),
               const SizedBox(height: 4),
-              const Text('Tulcán · Cámara CAM-005 · Acceso compartido',
+              const Text('Tulcán · Acceso compartido',
                   style: TextStyle(color: Colors.black54)),
               const SizedBox(height: 14),
+              if (plazas.isEmpty)
+                const Text('Ya no hay plazas visibles en este grupo.'),
               for (final plaza in plazas)
                 Card(
                   child: ListTile(
                     leading: CircleAvatar(
-                      backgroundColor: _colorEstado(
-                        plaza.visionEnLinea ? plaza.estado : 'SIN_SERVICIO',
+                      backgroundColor: colorEstado(
+                        estadoVisible(plaza,
+                            sincronizado: provider == null
+                                ? widget.sincronizado
+                                : !provider.cargando && provider.error == null),
                       ).withValues(alpha: .14),
                       child: Icon(Icons.local_parking_rounded,
-                          color: _colorEstado(
-                            plaza.visionEnLinea ? plaza.estado : 'SIN_SERVICIO',
+                          color: colorEstado(
+                            estadoVisible(plaza,
+                                sincronizado: provider == null
+                                    ? widget.sincronizado
+                                    : !provider.cargando &&
+                                        provider.error == null),
                           )),
                     ),
                     title: Text(plaza.nombre,
                         style: const TextStyle(fontWeight: FontWeight.w700)),
-                    subtitle: Text(_nombreEstado(
-                      plaza.visionEnLinea ? plaza.estado : 'SIN_SERVICIO',
+                    subtitle: Text(etiquetaEstado(
+                      estadoVisible(plaza,
+                          sincronizado: provider == null
+                              ? widget.sincronizado
+                              : !provider.cargando && provider.error == null),
                     )),
                     trailing: const Icon(Icons.chevron_right_rounded),
                     onTap: () {
@@ -374,37 +410,24 @@ class _MapaEspaciosState extends State<MapaEspacios> {
                 ),
               const SizedBox(height: 8),
               const Text(
-                'Los tres espacios comparten un punto de acceso. '
+                'Estas plazas comparten un punto de acceso. '
                 'Sus posiciones individuales aún no están georreferenciadas.',
                 style: TextStyle(color: Colors.black54, fontSize: 12),
               ),
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  Color _colorEstado(String estado) {
-    switch (estado) {
-      case 'LIBRE':
-        return EstacionaYaTokens.available;
-      case 'OCUPADO':
-        return EstacionaYaTokens.occupied;
-      default:
-        return EstacionaYaTokens.offline;
+      );
     }
-  }
 
-  String _nombreEstado(String estado) {
-    switch (estado) {
-      case 'LIBRE':
-        return 'LIBRE';
-      case 'OCUPADO':
-        return 'OCUPADO';
-      default:
-        return 'SIN SERVICIO';
-    }
+    showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        builder: (ctx) => provider == null
+            ? detalle(ctx)
+            : ListenableBuilder(
+                listenable: provider, builder: (ctx, _) => detalle(ctx)));
   }
 }
 
@@ -420,4 +443,30 @@ class _GrupoEspacios {
         espacios.map((e) => e.longitud!).reduce((a, b) => a + b) /
             espacios.length,
       );
+}
+
+class _PinPainter extends CustomPainter {
+  const _PinPainter(this.color);
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = Path()
+      ..moveTo(24, 47)
+      ..cubicTo(20, 40, 7, 32, 7, 21)
+      ..cubicTo(7, -1, 41, -1, 41, 21)
+      ..cubicTo(41, 32, 28, 40, 24, 47)
+      ..close();
+    canvas.drawShadow(path, EstacionaYaTokens.ink, 3, false);
+    canvas.drawPath(path, Paint()..color = color);
+    canvas.drawPath(
+        path,
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2);
+  }
+
+  @override
+  bool shouldRepaint(_PinPainter oldDelegate) => oldDelegate.color != color;
 }
