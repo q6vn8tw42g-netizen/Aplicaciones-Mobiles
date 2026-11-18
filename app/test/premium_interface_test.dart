@@ -1,4 +1,4 @@
-import 'package:estacionaya/providers/espacios_provider.dart';
+﻿import 'package:estacionaya/providers/espacios_provider.dart';
 import 'package:estacionaya/screens/home_screen.dart';
 import 'package:estacionaya/screens/login_screen.dart';
 import 'package:estacionaya/theme/estacionaya_theme.dart';
@@ -65,7 +65,7 @@ void main() {
         find.byType(DraggableScrollableSheet));
     expect(sheet.initialChildSize, .36);
     await tester.drag(
-        find.text('Espacios monitoreados'), const Offset(0, -300));
+        find.text('Estacionamientos disponibles'), const Offset(0, -300));
     await tester.pumpAndSettle();
     expect(sheet.controller!.size, greaterThan(.36));
     await tester.tap(find.byTooltip('Buscar'));
@@ -151,3 +151,4 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 }
+

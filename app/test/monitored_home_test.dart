@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 
 import 'package:estacionaya/providers/espacios_provider.dart';
 import 'package:estacionaya/screens/home_screen.dart';
@@ -63,7 +63,7 @@ void main() {
     filas.add([fila]);
     await t.pump();
     await t.pump();
-    expect(find.text('Espacios monitoreados'), findsOneWidget);
+    expect(find.text('Estacionamientos disponibles'), findsOneWidget);
     expect(find.text('Zonas azules'), findsNothing);
     expect(t.widget<MapaEspacios>(find.byType(MapaEspacios)).espacios, isEmpty);
     expect(
@@ -119,7 +119,8 @@ void main() {
     expect(find.text('Montúfar'), findsNothing);
     expect(find.text('Catálogo de calles'), findsNothing);
     expect(find.text('Calles documentadas'), findsNothing);
-    expect(find.text('Espacios monitoreados'), findsOneWidget);
+    expect(find.text('Estacionamientos disponibles'), findsOneWidget);
     await t.pumpWidget(const SizedBox.shrink());
   });
 }
+
